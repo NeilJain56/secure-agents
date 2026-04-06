@@ -41,7 +41,7 @@ It was built for professionals who handle sensitive data — lawyers, financial 
 
 ```bash
 # Clone and set up (installs Python, Ollama, venv, pulls LLM model)
-git clone https://github.com/yourorg/secure-agents.git
+git clone https://github.com/NeilJain56/secure-agents.git
 cd secure-agents
 bash setup.sh
 
