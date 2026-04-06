@@ -103,8 +103,12 @@ def get_oauth2_token(account: str) -> str | None:
     try:
         token_data = json.loads(token_path.read_text())
         # Try to refresh if we have a refresh token
-        if "refresh_token" in token_data and "client_id" in token_data:
-            return _refresh_oauth2_token(token_data, token_path)
+        if "refresh_token" in token_data:
+            # client_secret is stored in Keychain, not in the token file
+            client_secret = get_credential("oauth2_client_secret")
+            client_id = token_data.get("client_id", "")
+            if client_secret and client_id:
+                return _refresh_oauth2_token(token_data, token_path, client_id, client_secret)
         return token_data.get("access_token")
     except Exception as e:
         logger.error("credentials.oauth2_read_error", error=str(e))
@@ -115,7 +119,8 @@ def run_oauth2_flow(client_secrets_path: str, account: str) -> bool:
     """Run the OAuth2 authorization flow for Gmail.
 
     This opens a browser for the user to authorize access. The resulting
-    token is stored locally in ~/.secure-agents/tokens/.
+    token is stored locally in ~/.secure-agents/tokens/ (access + refresh
+    tokens only — the client_secret is stored in the Keychain, never on disk).
 
     Args:
         client_secrets_path: Path to Google OAuth2 client_secrets.json
@@ -139,6 +144,11 @@ def run_oauth2_flow(client_secrets_path: str, account: str) -> bool:
         flow = InstalledAppFlow.from_client_secrets_file(client_secrets_path, SCOPES)
         creds = flow.run_local_server(port=0)
 
+        # Store client_secret in Keychain — NEVER on disk
+        if creds.client_secret:
+            store_credential("oauth2_client_secret", creds.client_secret)
+
+        # Store ONLY tokens on disk (not the client_secret)
         TOKEN_DIR.mkdir(parents=True, exist_ok=True)
         token_path = TOKEN_DIR / f"{_safe_filename(account)}.json"
         token_data = {
@@ -146,7 +156,7 @@ def run_oauth2_flow(client_secrets_path: str, account: str) -> bool:
             "refresh_token": creds.refresh_token,
             "token_uri": creds.token_uri,
             "client_id": creds.client_id,
-            "client_secret": creds.client_secret,
+            # client_secret is NOT stored here — it's in the Keychain
         }
         token_path.write_text(json.dumps(token_data))
         # Restrict file permissions
@@ -159,23 +169,33 @@ def run_oauth2_flow(client_secrets_path: str, account: str) -> bool:
         return False
 
 
-def _refresh_oauth2_token(token_data: dict, token_path: Path) -> str | None:
+def _refresh_oauth2_token(
+    token_data: dict, token_path: Path, client_id: str, client_secret: str
+) -> str | None:
     """Refresh an OAuth2 access token using the refresh token."""
     try:
         import httpx
         response = httpx.post(
             token_data.get("token_uri", "https://oauth2.googleapis.com/token"),
             data={
-                "client_id": token_data["client_id"],
-                "client_secret": token_data["client_secret"],
+                "client_id": client_id,
+                "client_secret": client_secret,
                 "refresh_token": token_data["refresh_token"],
                 "grant_type": "refresh_token",
             },
+            timeout=10.0,  # Hard timeout to prevent hanging
+            verify=True,   # Explicitly enforce TLS verification
         )
         response.raise_for_status()
-        new_token = response.json()["access_token"]
 
-        # Update stored token
+        new_data = response.json()
+        if "access_token" not in new_data:
+            logger.warning("credentials.oauth2_refresh_no_token")
+            return token_data.get("access_token")
+
+        new_token = new_data["access_token"]
+
+        # Update stored token (still no client_secret on disk)
         token_data["access_token"] = new_token
         token_path.write_text(json.dumps(token_data))
         token_path.chmod(0o600)

@@ -163,14 +163,24 @@ Conventions for `execute()` return values:
 - Include an `"error"` key (string) on failure so agents can detect problems.
 - Use descriptive keys for success results.
 - Never include raw credentials or PII in return values.
+- Error messages are sanitized in API responses -- do not expose internal paths, stack traces, or credentials in error dicts.
 
 ## Best Practices for Credential Handling
 
-1. **Never store credentials in config files.** Use `get_credential()` from `core/credentials.py`.
+1. **Never store credentials in config files.** Use `get_credential()` from `core/credentials.py`. OAuth2 client_secret is stored in Keychain, not on disk.
 2. **Never log credentials.** Use structlog and log metadata only.
-3. **Fail clearly.** If a credential is missing, return a helpful error message telling the user how to set it up.
+3. **Fail clearly.** If a credential is missing, return a helpful error message telling the user how to set it up. Note: error messages in API responses are sanitized -- do not leak internal details.
 4. **Validate early.** Check credentials in `validate_config()` so the dashboard can show the problem before the agent starts.
 5. **Support both Keychain and env vars.** `get_credential()` handles this automatically -- just pick a consistent key name.
+6. **No cloud provider keys.** Only Ollama (local inference) is supported. There are no cloud API keys (Anthropic, OpenAI, Gemini) to manage.
+
+## Security Considerations for Tools
+
+- **File validation uses magic bytes.** `validate_file()` in `core/security.py` checks magic bytes (not just file extensions) to verify file types. Always call it before processing uploaded or received files.
+- **Path traversal protection.** File storage has path traversal protection built in. Do not construct file paths by concatenating user input -- use the `file_storage` tool or the security utilities.
+- **Sandbox execution.** Sandbox is enabled by default and requires Docker. Document parsing routes through the Docker sandbox when `sandbox_enabled=True`. If Docker is missing and sandbox is enabled, it fails with a hard error (no subprocess fallback).
+- **Input sanitization.** `sanitize_text()` in `core/security.py` detects 20+ prompt injection patterns with unicode normalization. Always sanitize user/document content before passing to the provider.
+- **TLS/SSL on email.** TLS/SSL is always enforced on email connections. There are no `use_tls`/`use_ssl` toggles -- you must set `allow_insecure_connections: true` to override.
 
 ## Template File
 

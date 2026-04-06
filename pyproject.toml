@@ -26,11 +26,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-anthropic = ["anthropic>=0.40"]
-openai = ["openai>=1.50"]
-gemini = ["google-genai>=1.0"]
 gmail-oauth = ["google-auth-oauthlib>=1.0"]
-all = ["secure-agents[anthropic,openai,gemini,gmail-oauth]"]
+all = ["secure-agents[gmail-oauth]"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
 
 [project.scripts]

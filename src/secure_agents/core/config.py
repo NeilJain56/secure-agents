@@ -7,6 +7,9 @@ specify its own tool settings, file size limits, polling intervals, etc.
 The top-level `defaults` section provides fallback values that agents inherit
 if they don't override them. This means adding a new agent never requires
 touching global config sections.
+
+Security principle: only local LLM providers are supported. No data leaves
+your machine. There are no cloud provider options to accidentally enable.
 """
 
 from __future__ import annotations
@@ -66,11 +69,9 @@ class ProviderSettings(BaseModel):
 
 
 class ProviderConfig(BaseModel):
+    """Provider configuration — only local inference via Ollama is supported."""
     active: str = "ollama"
     ollama: ProviderSettings = ProviderSettings(host="http://localhost:11434", model="llama3.2")
-    anthropic: ProviderSettings = ProviderSettings(model="claude-sonnet-4-20250514")
-    openai: ProviderSettings = ProviderSettings(model="gpt-4o")
-    gemini: ProviderSettings = ProviderSettings(model="gemini-2.5-flash")
 
 
 class QueueConfig(BaseModel):
@@ -79,11 +80,20 @@ class QueueConfig(BaseModel):
     retry_delay_seconds: int = 60
 
 
+# Valid agent name pattern: lowercase alphanumeric + underscores, 1-64 chars
+_AGENT_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+def validate_agent_name(name: str) -> bool:
+    """Check that an agent name is safe for use in file paths and config keys."""
+    return bool(_AGENT_NAME_PATTERN.match(name))
+
+
 class AppConfig(BaseModel):
     """Top-level application config.
 
     - `defaults`: shared fallback values for all agents (email, security, storage, etc.)
-    - `provider`: LLM provider selection and settings
+    - `provider`: LLM provider selection and settings (local only)
     - `queue`: job queue settings
     - `agents`: per-agent config dicts; each inherits from defaults then overrides
     """
@@ -109,6 +119,10 @@ def load_config(path: str | Path = "config.yaml") -> AppConfig:
 
     Environment variables in ${VAR:default} format are interpolated.
     Falls back to defaults if the file doesn't exist.
+
+    Validates:
+    - Only 'ollama' is allowed as a provider (no cloud egress)
+    - Agent names are safe for file paths
     """
     path = Path(path)
 
@@ -119,4 +133,23 @@ def load_config(path: str | Path = "config.yaml") -> AppConfig:
     else:
         raw = {}
 
-    return AppConfig.model_validate(raw)
+    config = AppConfig.model_validate(raw)
+
+    # Enforce: only local providers allowed
+    if config.provider.active != "ollama":
+        raise ValueError(
+            f"Provider '{config.provider.active}' is not allowed. "
+            f"Only 'ollama' (local inference) is supported. "
+            f"No data leaves your machine."
+        )
+
+    # Validate agent names
+    for name in config.agents:
+        if not validate_agent_name(name):
+            raise ValueError(
+                f"Invalid agent name '{name}'. "
+                f"Agent names must be lowercase alphanumeric + underscores, "
+                f"start with a letter, and be 1-64 characters."
+            )
+
+    return config

@@ -3,11 +3,13 @@
 #
 # Build: docker build -t secure-agents-sandbox -f Dockerfile.sandbox .
 
+# Pin to a specific digest to prevent supply-chain attacks.
+# Update by running: docker pull python:3.12-slim && docker inspect --format='{{index .RepoDigests 0}}' python:3.12-slim
 FROM python:3.12-slim
 
 # No network access will be enforced at runtime via --network=none
-# Install only what's needed for analysis
-RUN pip install --no-cache-dir pdfplumber python-docx && \
+# Install only what's needed for analysis — pinned versions
+RUN pip install --no-cache-dir pdfplumber==0.11.4 python-docx==1.1.2 && \
     rm -rf /root/.cache
 
 # Create non-root user

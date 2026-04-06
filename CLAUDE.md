@@ -2,7 +2,7 @@
 
 ## Project Purpose
 
-Secure Agents is a secure, on-prem AI agent framework for legal professionals and anyone handling sensitive data. Agents automate workflows (NDA review, contract analysis, compliance monitoring) using modular tools and swappable LLM providers. Defense-in-depth security: credentials never touch disk in plaintext, documents are sanitized before LLM processing, sandbox execution is available, and audit logs record metadata only.
+Secure Agents is a secure, on-prem AI agent framework for legal professionals and anyone handling sensitive data. Agents automate workflows (NDA review, contract analysis, compliance monitoring) using modular tools and a local-only LLM provider (Ollama). No data ever leaves the machine. Defense-in-depth security: credentials never touch disk in plaintext (OAuth2 client_secret stored in Keychain), documents are sanitized before LLM processing with expanded prompt injection detection (20+ patterns with unicode normalization), sandbox execution is enabled by default (Docker required -- hard error if Docker is missing), document parsing routes through the Docker sandbox, file storage has path traversal protection with magic byte validation, TLS/SSL is always enforced on email connections, the dashboard has CORS restrictions with per-session auth tokens and binds to 127.0.0.1 only, agent names are validated (lowercase alphanumeric + underscores only), error messages are sanitized in API responses, and audit logs record metadata only.
 
 ## Architecture Overview
 
@@ -10,7 +10,7 @@ Three interchangeable component types form the core:
 
 - **Agents** -- Thin workflow orchestrators. Compose tools + a provider. Never implement I/O directly.
 - **Tools** -- Reusable capabilities (email, document parsing, file storage). Shared across agents via registry.
-- **Providers** -- LLM backends (Ollama, Anthropic, OpenAI, Gemini). Same interface, swappable via config.
+- **Providers** -- LLM backend (Ollama only -- local inference, no data leaves the machine). Same interface as before, but only Ollama is supported.
 
 All three register via decorators and are discovered at import time by the registry.
 
@@ -28,18 +28,15 @@ src/secure_agents/
     base_provider.py   # BaseProvider ABC, Message, CompletionResponse -- DO NOT MODIFY
     registry.py        # Global Registry singleton, @register_* decorators -- DO NOT MODIFY
     config.py          # AppConfig, load_config(), env var interpolation, deep merge
-    credentials.py     # Keychain / env var / OAuth2 credential resolution
-    security.py        # File validation, input sanitization, AuditLog
-    sandbox.py         # Docker / subprocess isolated execution
-    job_queue.py       # SQLite-backed job queue (JobQueue, Job, JobStatus)
+    credentials.py     # Keychain / env var / OAuth2 credential resolution (OAuth2 client_secret stored in Keychain, not on disk)
+    security.py        # File validation (magic byte + extension), input sanitization (20+ prompt injection patterns, unicode normalization), AuditLog
+    sandbox.py         # Docker isolated execution (enabled by default, no subprocess fallback)
+    job_queue.py       # SQLite-backed job queue (JobQueue, Job, JobStatus), DB file has 0o600 permissions
     metrics.py         # In-memory MetricsCollector singleton
     builder.py         # discover_all(), build_agent() -- wires agents/tools/providers
     logger.py          # structlog setup
   providers/
-    ollama.py          # Local Ollama provider
-    anthropic_provider.py
-    openai_provider.py
-    gemini_provider.py
+    ollama.py          # Local Ollama provider (only supported provider)
   tools/
     email_reader.py    # IMAP inbox monitor, attachment download
     email_sender.py    # SMTP email sending
@@ -162,7 +159,7 @@ Agents are currently triggered by their `tick()` loop (poll-based). To add a new
 Defined in `src/secure_agents/core/config.py`:
 
 - **AppConfig** (top-level): `defaults`, `provider`, `queue`, `agents`
-- **ProviderConfig**: `active` (str), plus `ollama`/`anthropic`/`openai`/`gemini` sub-objects
+- **ProviderConfig**: `active` (str, must be `ollama`), plus `ollama` sub-object
 - **ProviderSettings**: `host`, `model`, `temperature`
 - **QueueConfig**: `db_path`, `max_retries`, `retry_delay_seconds`
 
@@ -181,7 +178,7 @@ Agents can use the queue in `tick()` to process work items instead of direct pol
 
 ## Dashboard <-> Backend Communication
 
-The dashboard is a single-page app (`ui/dashboard.html`) served by FastAPI (`ui/server.py`).
+The dashboard is a single-page app (`ui/dashboard.html`) served by FastAPI (`ui/server.py`). It binds to 127.0.0.1 only, has CORS restrictions, uses per-session auth tokens, and sanitizes error messages in API responses.
 
 Key API endpoints:
 - `GET /api/agents` -- list agents with health, config, run status
@@ -192,8 +189,7 @@ Key API endpoints:
 - `POST /api/credentials` -- store a credential in Keychain
 - `POST /api/test-email` -- test IMAP connection
 - `POST /api/config` -- update a single config value by dotted key path
-- `POST /api/provider` -- switch active LLM provider
-- `GET /api/providers` -- list providers with availability
+- `GET /api/providers` -- list providers with availability (Ollama only)
 - `GET /api/tools` -- list registered tools
 - `GET /api/metrics` -- agent metrics snapshot
 
@@ -201,7 +197,7 @@ Key API endpoints:
 
 - New agent: `agents/your_agent/agent.py` with `@register_agent`
 - New tool: `tools/your_tool.py` with `@register_tool`
-- New provider: `providers/your_provider.py` with `@register_provider`
+- New provider: not applicable (only Ollama is supported -- cloud providers have been removed)
 - New setup steps: `setup/steps.py` (add step functions) + `setup/manifest.py` (declare dependencies)
 - New CLI command: `cli.py` (add `@main.command()`)
 - New dashboard endpoint: `ui/server.py` (add FastAPI route)
@@ -217,9 +213,9 @@ These define the framework's contracts. Changing them breaks all agents/tools/pr
 
 ## Naming Conventions and Code Style
 
-- Agent names: `snake_case` (e.g., `nda_reviewer`, `contract_analyzer`)
+- Agent names: lowercase alphanumeric + underscores only (e.g., `nda_reviewer`, `contract_analyzer`) -- validated at registration
 - Tool names: `snake_case` (e.g., `email_reader`, `document_parser`)
-- Provider names: lowercase (e.g., `ollama`, `anthropic`)
+- Provider names: lowercase (only `ollama` is supported)
 - Agent directories: `src/secure_agents/agents/<agent_name>/`
 - Tool files: `src/secure_agents/tools/<tool_name>.py`
 - Provider files: `src/secure_agents/providers/<provider_name>.py`
@@ -235,28 +231,31 @@ pip install -e ".[dev]"
 # Run tests
 pytest tests/
 
-# Validate config and dependencies
+# Validate config and dependencies (checks Ollama, Docker, etc.)
 secure-agents validate
 
 # List all registered agents, tools, providers
 secure-agents list
 
-# Start a specific agent
+# Start a specific agent (requires Docker for sandbox)
 secure-agents start nda_reviewer
 
 # Start all enabled agents
 secure-agents start
 
-# Store credentials
+# Store credentials (stored in macOS Keychain)
 secure-agents auth setup
 
-# Set up Gmail OAuth2
+# Set up Gmail OAuth2 (client_secret stored in Keychain, not on disk)
 secure-agents auth gmail path/to/client_secrets.json
 
-# Launch web dashboard
+# Launch web dashboard (binds to 127.0.0.1 only)
 secure-agents ui
 
 # Run the guided setup wizard
 secure-agents setup
 secure-agents setup nda_reviewer --dry-run
+
+# Verify Docker is available (required -- sandbox is enabled by default)
+docker info
 ```

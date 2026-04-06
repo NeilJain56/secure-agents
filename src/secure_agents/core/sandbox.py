@@ -1,13 +1,13 @@
 """Sandbox execution layer for isolated document processing.
 
-Provides Docker-based isolation when available, with a subprocess fallback.
+Provides Docker-based isolation. When sandbox is enabled (the default),
+Docker MUST be available — there is no fallback to native execution.
 Each execution creates an ephemeral environment that is destroyed after use.
 """
 
 from __future__ import annotations
 
 import json
-import subprocess
 import tempfile
 from pathlib import Path
 
@@ -31,31 +31,55 @@ def run_in_sandbox(
     script: str,
     input_data: dict,
     timeout: int = 300,
-    sandbox_enabled: bool = False,
+    sandbox_enabled: bool = True,
 ) -> dict:
-    """Execute a Python script in an isolated environment.
+    """Execute a Python script in an isolated Docker container.
 
-    If Docker is available and sandbox_enabled, runs in a container with:
-    - No network access
+    When sandbox_enabled is True (the default), Docker MUST be available.
+    There is NO fallback to native execution — if Docker is missing, this
+    raises a hard error. This is intentional: silent degradation to native
+    execution would defeat the purpose of sandboxing.
+
+    The container runs with:
+    - No network access (--network=none)
     - Read-only input mount
     - Write-only output mount
+    - Memory limit (512MB)
+    - CPU throttling (50% of one core)
+    - Read-only root filesystem
     - Automatic destruction after completion
 
-    Otherwise, falls back to a subprocess with a timeout.
-
     Args:
-        script: Python code to execute. Must write JSON to /output/result.json
-                (Docker) or stdout (subprocess).
+        script: Python code to execute. Must write JSON to /output/result.json.
         input_data: Data passed to the script as /input/data.json.
         timeout: Maximum execution time in seconds.
-        sandbox_enabled: Whether to attempt Docker isolation.
+        sandbox_enabled: Whether Docker isolation is required.
 
     Returns:
         Parsed JSON result from the script.
+
+    Raises:
+        RuntimeError: If sandbox is enabled but Docker is not available.
     """
-    if sandbox_enabled and _docker_available():
+    if sandbox_enabled:
+        if not _docker_available():
+            raise RuntimeError(
+                "Sandbox is enabled but Docker is not available. "
+                "Either install and start Docker, or explicitly set "
+                "security.sandbox_enabled: false in config.yaml "
+                "(NOT RECOMMENDED — disabling the sandbox allows "
+                "untrusted documents to be parsed on the host)."
+            )
         return _run_docker(script, input_data, timeout)
-    return _run_subprocess(script, input_data, timeout)
+
+    # Sandbox explicitly disabled — warn and refuse.
+    # There is no subprocess fallback. Code that needs to run without
+    # Docker must call the parsing libraries directly (as document_parser
+    # does when sandbox is disabled).
+    raise RuntimeError(
+        "Sandbox is disabled. Use direct library calls instead of "
+        "run_in_sandbox(). This function only supports Docker execution."
+    )
 
 
 def _run_docker(script: str, input_data: dict, timeout: int) -> dict:
@@ -103,45 +127,3 @@ def _run_docker(script: str, input_data: dict, timeout: int) -> dict:
         except Exception as e:
             logger.error("sandbox.docker.error", error=str(e))
             raise RuntimeError(f"Sandbox execution failed: {e}") from e
-
-
-def _run_subprocess(script: str, input_data: dict, timeout: int) -> dict:
-    """Fallback: run script in a subprocess with timeout."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        (tmp / "data.json").write_text(json.dumps(input_data))
-
-        # Wrap the script to read input and print JSON output
-        wrapper = f"""
-import json, sys
-sys.path.insert(0, '.')
-INPUT_PATH = '{tmp / "data.json"}'
-with open(INPUT_PATH) as f:
-    input_data = json.load(f)
-
-{script}
-"""
-        script_path = tmp / "run.py"
-        script_path.write_text(wrapper)
-
-        try:
-            result = subprocess.run(
-                ["python", str(script_path)],
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=str(tmp),
-            )
-
-            if result.returncode != 0:
-                logger.error("sandbox.subprocess.error", stderr=result.stderr[:500])
-                raise RuntimeError(f"Script failed: {result.stderr[:500]}")
-
-            return json.loads(result.stdout)
-
-        except subprocess.TimeoutExpired:
-            logger.error("sandbox.subprocess.timeout", timeout=timeout)
-            raise RuntimeError(f"Script timed out after {timeout}s")
-        except json.JSONDecodeError:
-            logger.error("sandbox.subprocess.bad_output")
-            raise RuntimeError("Script did not produce valid JSON output")

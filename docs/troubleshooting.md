@@ -82,29 +82,53 @@ defaults:
       auth_method: app_password   # or "oauth2"
 ```
 
-## API Key Issues for Cloud Providers
+## Docker / Sandbox Issues
 
-**Symptoms:** Provider health check shows "No API key for anthropic/openai/gemini."
+Sandbox is enabled by default and requires Docker. There is no subprocess fallback -- if Docker is missing and sandbox is enabled, the framework fails with a hard error.
+
+### Docker Not Installed or Not Running
+
+**Symptoms:** Hard error on agent start: "Docker is required for sandbox execution" or similar.
+
+**Fix (not installed):**
+```bash
+# Install Docker Desktop: https://www.docker.com/products/docker-desktop/
+# After installing, start Docker Desktop and ensure it is running.
+```
+
+**Fix (installed but not running):**
+```bash
+# Start Docker Desktop, or:
+open -a Docker
+# Wait for Docker to fully start, then verify:
+docker info
+```
+
+**Verify Docker is available:**
+```bash
+docker info
+docker ps
+```
+
+### Document Parsing Fails in Sandbox
+
+**Symptoms:** `document_parser` returns errors about sandbox execution or container failures.
 
 **Fix:**
-```bash
-secure-agents auth setup
-# Enter the API key when prompted for the relevant provider
-```
+1. Ensure Docker is running (`docker info`).
+2. Check that the Docker image used by the sandbox is available:
+   ```bash
+   docker images
+   ```
+3. Check Docker disk space -- containers may fail if the disk is full.
+4. Review logs for sandbox-specific errors:
+   ```bash
+   docker logs <container_id>
+   ```
 
-Or set environment variables:
-```bash
-export ANTHROPIC_API_KEY="sk-ant-..."
-export OPENAI_API_KEY="sk-..."
-export GEMINI_API_KEY="..."
-```
+### Disabling Sandbox (Not Recommended)
 
-**Verify:**
-```bash
-secure-agents validate
-```
-
-The validate command checks provider reachability and reports whether keys are found.
+If you must disable sandbox for debugging, set `sandbox_enabled: false` in `config.yaml`. This is not recommended for production use. Document parsing will run outside the sandbox, reducing security isolation.
 
 ## Dashboard Won't Start / Port in Use
 
@@ -127,6 +151,8 @@ kill <PID>
 secure-agents ui --no-browser
 # Then open http://127.0.0.1:8420 in your browser
 ```
+
+**Note:** The dashboard binds to 127.0.0.1 only (not 0.0.0.0) and has CORS restrictions with per-session auth tokens. It is not accessible from other machines on the network.
 
 ## Agent Stuck in Running State
 
@@ -226,10 +252,10 @@ secure-agents validate
 
 It checks:
 - Config file exists and parses correctly
-- Active provider is reachable
+- Ollama is reachable (the only supported provider -- no cloud providers)
 - All registered agents, tools, and providers are listed
 - Configured agents are shown with enabled/disabled status
-- Optional SDK availability (Anthropic, OpenAI, Gemini)
-- Docker availability (for sandbox mode)
+- Docker availability (required -- sandbox is enabled by default)
+- Agent name validity (lowercase alphanumeric + underscores only)
 
 Use this as a first step when anything is not working.

@@ -1,7 +1,7 @@
 """Base provider interface for LLM backends.
 
 All providers implement the same interface so agents are backend-agnostic.
-Swapping from Ollama to Gemini is a config change, not a code change.
+Only local providers (Ollama) are supported — no data ever leaves your machine.
 """
 
 from __future__ import annotations

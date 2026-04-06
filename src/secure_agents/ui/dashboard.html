@@ -1163,6 +1163,15 @@ function switchTab(tab) {
   if (tab === 'audit') fetchAuditLog();
 }
 
+// ─── Auth Token ──────────────────────────────────────────────────
+// Read the per-session token injected by the server
+const AUTH_TOKEN = document.querySelector('meta[name="auth-token"]')?.content || '';
+
+// Helper: add auth header to state-changing requests
+function authHeaders() {
+  return { 'X-Auth-Token': AUTH_TOKEN, 'Content-Type': 'application/json' };
+}
+
 // ─── API ──────────────────────────────────────────────────────────
 async function fetchAgents() {
   try {
@@ -1204,7 +1213,7 @@ async function startAgents(names) {
   try {
     const res = await fetch('/api/agents/start', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders(),
       body: JSON.stringify({agents: names}),
     });
     const data = await res.json();
@@ -1223,7 +1232,7 @@ async function startAgents(names) {
 
 async function stopAgent(name) {
   try {
-    await fetch(`/api/agents/${name}/stop`, {method: 'POST'});
+    await fetch(`/api/agents/${name}/stop`, {method: 'POST', headers: authHeaders()});
     toast(`Stopped ${formatName(name)}`, 'success');
     await fetchAgents();
   } catch (e) {
@@ -1233,7 +1242,7 @@ async function stopAgent(name) {
 
 async function stopAllAgents() {
   try {
-    const res = await fetch('/api/agents/stop-all', {method: 'POST'});
+    const res = await fetch('/api/agents/stop-all', {method: 'POST', headers: authHeaders()});
     const data = await res.json();
     if (data.stopped && data.stopped.length) {
       toast(`Stopped ${data.stopped.length} agent(s)`, 'success');
@@ -1253,7 +1262,7 @@ async function saveCredential(key, inputEl) {
   try {
     const res = await fetch('/api/credentials', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders(),
       body: JSON.stringify({key, value}),
     });
     if (!res.ok) throw new Error();
@@ -1266,7 +1275,7 @@ async function saveCredential(key, inputEl) {
       try {
         const testRes = await fetch('/api/test-email', {
           method: 'POST',
-          headers: {'Content-Type': 'application/json'},
+          headers: authHeaders(),
           body: JSON.stringify({}),
         });
         const testData = await testRes.json();
@@ -1289,7 +1298,7 @@ async function saveConfigValue(keyPath, value) {
   try {
     const res = await fetch('/api/config', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders(),
       body: JSON.stringify({key_path: keyPath, value}),
     });
     if (!res.ok) throw new Error();
@@ -1303,7 +1312,7 @@ async function switchProvider(providerName) {
   try {
     const res = await fetch('/api/provider', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders(),
       body: JSON.stringify({provider: providerName}),
     });
     if (!res.ok) throw new Error();
@@ -1343,7 +1352,7 @@ async function testEmailConnection(agentName, btn) {
   try {
     const res = await fetch('/api/test-email', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders(),
       body: JSON.stringify({}),
     });
     const data = await res.json();
@@ -1961,7 +1970,7 @@ function latencyRow(label, ms, maxMs, extraClass) {
 // ─── Toggle Agent Enabled/Disabled ───────────────────────────────
 async function toggleAgentEnabled(name) {
   try {
-    const res = await fetch(`/api/agents/${name}/toggle`, { method: 'PATCH' });
+    const res = await fetch(`/api/agents/${name}/toggle`, { method: 'PATCH', headers: authHeaders() });
     if (!res.ok) throw new Error(res.statusText);
     const data = await res.json();
     toast(`${formatName(name)} ${data.enabled ? 'enabled' : 'disabled'}`, 'success');
@@ -2103,7 +2112,7 @@ function renderOutputs() {
 async function deleteOutput(path) {
   if (!confirm(`Delete ${path}?`)) return;
   try {
-    const res = await fetch(`/api/outputs/${path}`, { method: 'DELETE' });
+    const res = await fetch(`/api/outputs/${path}`, { method: 'DELETE', headers: authHeaders() });
     if (!res.ok) throw new Error(res.statusText);
     toast('File deleted', 'success');
     fetchOutputs();

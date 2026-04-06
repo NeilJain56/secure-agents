@@ -76,6 +76,11 @@ class JobQueue:
 
     def _init_db(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Set restrictive file permissions (owner-only read/write)
+        if not self.db_path.exists():
+            self.db_path.touch(mode=0o600)
+        else:
+            self.db_path.chmod(0o600)
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""

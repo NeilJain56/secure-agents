@@ -15,13 +15,18 @@ from imapclient import IMAPClient
 from secure_agents.core.base_tool import BaseTool
 from secure_agents.core.credentials import get_credential, get_oauth2_token
 from secure_agents.core.registry import register_tool
+from secure_agents.core.security import sanitize_filename
 
 logger = structlog.get_logger()
 
 
 @register_tool("email_reader")
 class EmailReaderTool(BaseTool):
-    """Monitors an IMAP mailbox and downloads attachments from new emails."""
+    """Monitors an IMAP mailbox and downloads attachments from new emails.
+
+    Security: SSL is always enforced. Plaintext IMAP connections are not
+    supported. Set allow_insecure_connections: true to override (NOT RECOMMENDED).
+    """
 
     name = "email_reader"
     description = "Read emails via IMAP and download attachments"
@@ -32,8 +37,13 @@ class EmailReaderTool(BaseTool):
         self.port = int(self.config.get("port", 993))
         self.username = self.config.get("username", "")
         self.auth_method = self.config.get("auth_method", "app_password")
-        self.use_ssl = self.config.get("use_ssl", True)
         self.download_dir = self.config.get("download_dir", tempfile.mkdtemp(prefix="secure_agents_"))
+
+        # SSL is always on unless explicitly overridden (NOT RECOMMENDED)
+        self._allow_insecure = self.config.get("allow_insecure_connections", False)
+        if self._allow_insecure:
+            logger.warning("email_reader.INSECURE_CONNECTION",
+                         msg="SSL is disabled. Credentials may be transmitted in plaintext.")
 
     def _authenticate(self, client: IMAPClient) -> None:
         """Authenticate with the IMAP server using the configured method."""
@@ -44,7 +54,6 @@ class EmailReaderTool(BaseTool):
                     f"No OAuth2 token for {self.username}. "
                     "Run: secure-agents auth gmail"
                 )
-            auth_string = f"user={self.username}\x01auth=Bearer {token}\x01\x01"
             client.oauth2_login(self.username, token)
         else:
             # App password from keychain or env var
@@ -76,7 +85,9 @@ class EmailReaderTool(BaseTool):
 
         emails = []
         try:
-            with IMAPClient(self.host, port=self.port, ssl=self.use_ssl) as client:
+            # Always use SSL unless explicitly overridden
+            use_ssl = not self._allow_insecure
+            with IMAPClient(self.host, port=self.port, ssl=use_ssl) as client:
                 self._authenticate(client)
                 client.select_folder(folder)
 
@@ -130,7 +141,8 @@ class EmailReaderTool(BaseTool):
                 continue
 
             filename = self._decode_header(filename)
-            safe_name = "".join(c for c in filename if c.isalnum() or c in ".-_ ")
+            # Secure filename: alphanumeric, dots, hyphens, underscores only; max 255 chars
+            safe_name = sanitize_filename(filename)
             filepath = Path(self.download_dir) / safe_name
 
             payload = part.get_payload(decode=True)

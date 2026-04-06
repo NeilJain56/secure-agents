@@ -11,6 +11,7 @@ import structlog
 
 from secure_agents.core.base_tool import BaseTool
 from secure_agents.core.registry import register_tool
+from secure_agents.core.security import sanitize_filename, validate_path_within
 
 logger = structlog.get_logger()
 
@@ -19,7 +20,8 @@ logger = structlog.get_logger()
 class FileStorageTool(BaseTool):
     """Manages secure local file storage for agent outputs.
 
-    Stores JSON reports, manages retention, and handles temp file cleanup.
+    All file operations are jailed within the configured output_dir.
+    Path traversal attempts are rejected.
     """
 
     name = "file_storage"
@@ -27,9 +29,47 @@ class FileStorageTool(BaseTool):
 
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config)
-        self.output_dir = Path(self.config.get("output_dir", "./output"))
+        self.output_dir = Path(self.config.get("output_dir", "./output")).resolve()
         self.retention_days = self.config.get("retention_days", 90)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def _safe_target(self, filename: str, subfolder: str = "") -> Path | None:
+        """Resolve and validate a target path, ensuring it's within output_dir.
+
+        Returns None if the path is unsafe (path traversal, absolute path, etc.).
+        """
+        # Reject any directory traversal or absolute paths in inputs
+        for component in [filename, subfolder]:
+            if ".." in component or component.startswith("/") or component.startswith("\\"):
+                logger.warning("file_storage.path_traversal_blocked",
+                             filename=filename, subfolder=subfolder)
+                return None
+            if "\x00" in component:
+                logger.warning("file_storage.null_byte_blocked",
+                             filename=filename, subfolder=subfolder)
+                return None
+
+        # Sanitize the filename
+        safe_name = sanitize_filename(filename)
+        if not safe_name or safe_name == "unnamed":
+            return None
+
+        # Build and resolve the full path
+        if subfolder:
+            safe_subfolder = sanitize_filename(subfolder)
+            target_dir = self.output_dir / safe_subfolder
+        else:
+            target_dir = self.output_dir
+
+        filepath = (target_dir / safe_name).resolve()
+
+        # Final containment check: is the resolved path still under output_dir?
+        if not validate_path_within(filepath, self.output_dir):
+            logger.warning("file_storage.path_escape_blocked",
+                         resolved=str(filepath), output_dir=str(self.output_dir))
+            return None
+
+        return filepath
 
     def execute(self, **kwargs: Any) -> dict:
         """Store or retrieve a file.
@@ -64,9 +104,11 @@ class FileStorageTool(BaseTool):
         if not filename:
             return {"error": "No filename provided"}
 
-        target_dir = self.output_dir / subfolder if subfolder else self.output_dir
-        target_dir.mkdir(parents=True, exist_ok=True)
-        filepath = target_dir / filename
+        filepath = self._safe_target(filename, subfolder)
+        if filepath is None:
+            return {"error": "Invalid filename or path traversal detected"}
+
+        filepath.parent.mkdir(parents=True, exist_ok=True)
 
         with open(filepath, "w") as f:
             json.dump(data, f, indent=2, default=str)
@@ -81,11 +123,12 @@ class FileStorageTool(BaseTool):
         if not filename:
             return {"error": "No filename provided"}
 
-        target_dir = self.output_dir / subfolder if subfolder else self.output_dir
-        filepath = target_dir / filename
+        filepath = self._safe_target(filename, subfolder)
+        if filepath is None:
+            return {"error": "Invalid filename or path traversal detected"}
 
         if not filepath.exists():
-            return {"error": f"File not found: {filepath}"}
+            return {"error": f"File not found: {filepath.name}"}
 
         with open(filepath) as f:
             data = json.load(f)
@@ -94,7 +137,14 @@ class FileStorageTool(BaseTool):
 
     def _list(self, kwargs: dict) -> dict:
         subfolder = kwargs.get("subfolder", "")
-        target_dir = self.output_dir / subfolder if subfolder else self.output_dir
+
+        if subfolder:
+            safe_subfolder = sanitize_filename(subfolder)
+            target_dir = (self.output_dir / safe_subfolder).resolve()
+            if not validate_path_within(target_dir, self.output_dir):
+                return {"error": "Invalid subfolder"}
+        else:
+            target_dir = self.output_dir
 
         if not target_dir.exists():
             return {"files": []}
@@ -121,3 +171,6 @@ class FileStorageTool(BaseTool):
 
         logger.info("file_storage.cleanup", removed=removed, retention_days=self.retention_days)
         return {"removed": removed}
+
+    def validate_config(self) -> bool:
+        return self.output_dir.exists() or self.output_dir.parent.exists()

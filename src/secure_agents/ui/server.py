@@ -3,12 +3,19 @@
 Provides a REST API for managing agents: listing, health checks,
 setup validation, credential storage, start/stop control, metrics,
 outputs, audit log, triggers, and dead-letter queue.
+
+Security:
+- Binds to 127.0.0.1 ONLY (never 0.0.0.0)
+- Strict CORS: only localhost origins allowed
+- Per-session auth token required on all state-changing endpoints
+- Error messages are sanitized (no internal details leak to clients)
 """
 
 from __future__ import annotations
 
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import threading
@@ -20,12 +27,13 @@ from typing import Any
 import yaml
 import structlog
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel
 
 from secure_agents.core.builder import build_agent, discover_all
-from secure_agents.core.config import load_config, AppConfig
+from secure_agents.core.config import load_config, AppConfig, validate_agent_name
 from secure_agents.core.credentials import get_credential, store_credential, get_oauth2_token
 from secure_agents.core.logger import setup_logging
 from secure_agents.core.metrics import metrics
@@ -34,6 +42,25 @@ from secure_agents.core.registry import registry
 logger = structlog.get_logger()
 
 app = FastAPI(title="Secure Agents", docs_url=None, redoc_url=None)
+
+# ── Security: Auth token ────────────────────────────────────────────────────
+# Generated once at startup. Required on all state-changing endpoints.
+_auth_token: str = ""
+
+
+def _generate_auth_token() -> str:
+    """Generate a cryptographically secure session token."""
+    return secrets.token_urlsafe(32)
+
+
+async def _check_auth(request: Request) -> None:
+    """Verify the auth token on state-changing requests."""
+    if not _auth_token:
+        return  # Token not yet initialized (shouldn't happen)
+    token = request.headers.get("X-Auth-Token", "")
+    if not secrets.compare_digest(token, _auth_token):
+        raise HTTPException(403, "Invalid or missing auth token")
+
 
 # ── Global state ─────────────────────────────────────────────────────────────
 
@@ -59,6 +86,22 @@ def _reload_config() -> AppConfig:
     return _config
 
 
+def _validate_agent_name_param(name: str) -> None:
+    """Validate an agent name from a request parameter."""
+    if not validate_agent_name(name):
+        raise HTTPException(400, "Invalid agent name")
+
+
+def _safe_error(e: Exception) -> str:
+    """Return a safe error message — no internal paths or stack traces."""
+    msg = str(e)
+    # Strip anything that looks like a file path
+    if "/" in msg and ("src/" in msg or "Users/" in msg or "home/" in msg):
+        return "An internal error occurred"
+    # Cap length to prevent info leakage
+    if len(msg) > 200:
+        return msg[:200] + "..."
+    return msg
 
 
 # ── Health check logic ───────────────────────────────────────────────────────
@@ -68,19 +111,18 @@ def _check_agent_health(agent_name: str, config: AppConfig) -> dict:
     merged = config.get_agent_config(agent_name)
     checks = []
 
-    # 1. Check provider
-    provider_name = merged.get("provider", {}).get("override", config.provider.active)
+    # 1. Check provider (only Ollama)
+    provider_name = "ollama"
     try:
         provider_cls = registry.get_provider(provider_name)
-        provider_settings = getattr(config.provider, provider_name)
+        provider_settings = config.provider.ollama
         provider = provider_cls(provider_settings.model_dump())
         if provider.is_available():
             checks.append({"name": f"Provider ({provider_name})", "status": "ok", "detail": "Connected and ready"})
-        elif provider_name == "ollama":
+        else:
             # Check if Ollama is even installed
             if shutil.which("ollama"):
                 _ensure_ollama()  # try to start it automatically
-                # Re-check after attempting start
                 try:
                     started = provider.is_available()
                 except Exception:
@@ -96,12 +138,9 @@ def _check_agent_health(agent_name: str, config: AppConfig) -> dict:
                 checks.append({"name": f"Provider ({provider_name})", "status": "error",
                                "detail": "Ollama is not installed",
                                "setup_action": "ollama_install"})
-        else:
-            checks.append({"name": f"Provider ({provider_name})", "status": "error",
-                           "detail": f"{provider_name.title()} API is not reachable",
-                           "setup_action": "provider"})
-    except Exception as e:
-        checks.append({"name": f"Provider ({provider_name})", "status": "error", "detail": str(e)})
+    except Exception:
+        checks.append({"name": f"Provider ({provider_name})", "status": "error",
+                       "detail": "Provider check failed"})
 
     # 2. Check credentials needed by tools
     tool_names = merged.get("tools", [])
@@ -133,29 +172,21 @@ def _check_agent_health(agent_name: str, config: AppConfig) -> dict:
                                "setup_action": "credential",
                                "setup_key": "email_password"})
 
-    # 3. Check if provider needs API key
-    if provider_name in ("anthropic", "openai", "gemini"):
-        key_name = f"{provider_name}_api_key"
-        if get_credential(key_name):
-            checks.append({"name": f"{provider_name.title()} API key", "status": "ok",
-                           "detail": "Found in keychain/env"})
-        else:
-            checks.append({"name": f"{provider_name.title()} API key", "status": "error",
-                           "detail": f"No API key for {provider_name}",
-                           "setup_action": "credential",
-                           "setup_key": key_name})
-
     all_ok = all(c["status"] == "ok" for c in checks)
     return {"healthy": all_ok, "checks": checks}
 
 
-# ── API Routes ─────���─────────────────────────────────────────────────────────
+# ── API Routes ───────────────────────────────────────────────────────────────
 
 @app.get("/", response_class=HTMLResponse)
 def serve_dashboard():
-    """Serve the single-page dashboard."""
+    """Serve the single-page dashboard with the auth token embedded."""
     html_path = Path(__file__).parent / "dashboard.html"
-    return HTMLResponse(html_path.read_text())
+    html = html_path.read_text()
+    # Inject the auth token as a meta tag so JavaScript can read it
+    token_meta = f'<meta name="auth-token" content="{_auth_token}">'
+    html = html.replace("<head>", f"<head>\n    {token_meta}", 1)
+    return HTMLResponse(html)
 
 
 @app.get("/api/agents")
@@ -188,11 +219,11 @@ def list_agents():
             "running": is_running,
             "health": health,
             "tools": merged.get("tools", []),
-            "provider": merged.get("provider", {}).get("override", config.provider.active),
+            "provider": "ollama",
             "poll_interval": merged.get("poll_interval_seconds", 60),
             "email_username": email_username if email_username != "your-email@gmail.com" else "",
             "email_auth_method": auth_method,
-            "available_providers": registry.list_providers(),
+            "available_providers": ["ollama"],
             "last_run_at": agent_metrics.get("last_run_at"),
             "run_count_today": agent_metrics.get("run_count_today", 0),
             "run_count_total": agent_metrics.get("run_count_total", 0),
@@ -204,9 +235,10 @@ def list_agents():
 @app.get("/api/agents/{agent_name}/health")
 def agent_health(agent_name: str):
     """Get detailed health status for a specific agent."""
+    _validate_agent_name_param(agent_name)
     config = _reload_config()
     if agent_name not in registry.list_agents():
-        raise HTTPException(404, f"Agent '{agent_name}' not found")
+        raise HTTPException(404, "Agent not found")
     return _check_agent_health(agent_name, config)
 
 
@@ -215,8 +247,9 @@ class StartRequest(BaseModel):
 
 
 @app.post("/api/agents/start")
-def start_agents(req: StartRequest):
+async def start_agents(req: StartRequest, request: Request):
     """Start one or more agents in background threads with concurrency limits."""
+    await _check_auth(request)
     config = _reload_config()
     started = []
     errors = []
@@ -225,6 +258,8 @@ def start_agents(req: StartRequest):
     running_count = sum(1 for e in _running_agents.values() if e["thread"].is_alive())
 
     for name in req.agents:
+        _validate_agent_name_param(name)
+
         if name in _running_agents and _running_agents[name]["thread"].is_alive():
             errors.append({"agent": name, "error": "Already running"})
             continue
@@ -261,20 +296,22 @@ def start_agents(req: StartRequest):
             started.append(name)
             running_count += 1
         except Exception as e:
-            errors.append({"agent": name, "error": str(e)})
+            errors.append({"agent": name, "error": _safe_error(e)})
 
     return {"started": started, "errors": errors}
 
 
 @app.post("/api/agents/{agent_name}/stop")
-def stop_agent(agent_name: str):
+async def stop_agent(agent_name: str, request: Request):
     """Stop a running agent."""
+    await _check_auth(request)
+    _validate_agent_name_param(agent_name)
     if agent_name not in _running_agents:
-        raise HTTPException(404, f"Agent '{agent_name}' is not running")
+        raise HTTPException(404, "Agent is not running")
 
     entry = _running_agents.get(agent_name)
     if entry is None:
-        raise HTTPException(404, f"Agent '{agent_name}' is not running")
+        raise HTTPException(404, "Agent is not running")
     entry["agent"].request_stop()
     entry["thread"].join(timeout=5.0)
     _running_agents.pop(agent_name, None)
@@ -282,8 +319,9 @@ def stop_agent(agent_name: str):
 
 
 @app.post("/api/agents/stop-all")
-def stop_all_agents():
+async def stop_all_agents(request: Request):
     """Stop all running agents."""
+    await _check_auth(request)
     stopped = []
     for name, entry in list(_running_agents.items()):
         entry["agent"].request_stop()
@@ -301,8 +339,9 @@ class CredentialRequest(BaseModel):
 
 
 @app.post("/api/credentials")
-def save_credential(req: CredentialRequest):
+async def save_credential(req: CredentialRequest, request: Request):
     """Store a credential in the macOS Keychain."""
+    await _check_auth(request)
     if store_credential(req.key, req.value):
         return {"stored": True, "key": req.key}
     raise HTTPException(500, "Failed to store credential")
@@ -316,11 +355,9 @@ class TestEmailRequest(BaseModel):
 
 
 @app.post("/api/test-email")
-def test_email_connection(req: TestEmailRequest):
-    """Test IMAP connection with current credentials.
-
-    Actually connects to the mail server and authenticates to verify everything works.
-    """
+async def test_email_connection(req: TestEmailRequest, request: Request):
+    """Test IMAP connection with current credentials."""
+    await _check_auth(request)
     config = _get_config()
 
     # Use request params or fall back to config defaults
@@ -335,7 +372,7 @@ def test_email_connection(req: TestEmailRequest):
     try:
         from imapclient import IMAPClient
     except ImportError:
-        raise HTTPException(500, "imapclient not installed")
+        raise HTTPException(500, "IMAP client not available")
 
     try:
         with IMAPClient(host, port=port, ssl=True, timeout=10) as client:
@@ -350,30 +387,27 @@ def test_email_connection(req: TestEmailRequest):
                     return {"success": False, "error": "No email password found. Save it using the credential form above."}
                 client.login(username, password)
 
-            # If we get here, authentication succeeded - grab folder list as proof
+            # If we get here, authentication succeeded
             folders = client.list_folders()
             folder_count = len(folders) if folders else 0
             return {"success": True, "detail": f"Connected to {host} as {username} ({folder_count} folders)"}
 
     except Exception as e:
         error_msg = str(e)
-        # Provide friendlier error messages for common failures
         if "AUTHENTICATIONFAILED" in error_msg.upper() or "Invalid credentials" in error_msg:
             if auth_method == "oauth2":
                 error_msg = "OAuth2 authentication failed. Token may be expired. Re-run: secure-agents auth gmail client_secrets.json"
             else:
-                error_msg = "Authentication failed. Check your email and app password. For Gmail, you need a 16-character App Password (not your regular password)."
+                error_msg = "Authentication failed. Check your email and app password."
         elif "Connection refused" in error_msg or "timed out" in error_msg.lower():
             error_msg = f"Could not connect to {host}:{port}. Check your network connection."
+        else:
+            error_msg = "Email connection test failed"
         return {"success": False, "error": error_msg}
 
 
 def _update_yaml_value(key_path: str, value: Any) -> None:
-    """Update a value in config.yaml while preserving comments and formatting.
-
-    Uses line-level regex replacement for known leaf keys. Falls back to
-    full YAML rewrite only if the key can't be found in the file.
-    """
+    """Update a value in config.yaml while preserving comments and formatting."""
     import re
 
     path = Path(_config_path)
@@ -384,33 +418,19 @@ def _update_yaml_value(key_path: str, value: Any) -> None:
     keys = key_path.split(".")
     leaf = keys[-1]
 
-    # Try line-level replacement: find "  leaf: old_value" and replace
-    # Build an indent-aware pattern: the leaf key at any indent level
-    pattern = re.compile(
-        rf'^(\s*{re.escape(leaf)}\s*:\s*)(.+)$',
-        re.MULTILINE,
-    )
-
-    # To handle multiple keys with the same leaf name (e.g. "username" under
-    # both imap and smtp), we need context. Walk through the file and find
-    # the match that appears under the right parent hierarchy.
     lines = content.split('\n')
     target_line = None
 
-    # Build expected parent path to disambiguate
     for i, line in enumerate(lines):
         stripped = line.lstrip()
         if stripped.startswith(f'{leaf}:'):
-            # Check if the parent keys match by walking backwards
             if _line_matches_path(lines, i, keys):
                 target_line = i
                 break
 
     if target_line is not None:
-        # Replace just this line, preserving indent and any inline comment
         old_line = lines[target_line]
         indent = old_line[:len(old_line) - len(old_line.lstrip())]
-        # Format value
         if isinstance(value, bool):
             formatted = 'true' if value else 'false'
         elif isinstance(value, (int, float)):
@@ -420,7 +440,6 @@ def _update_yaml_value(key_path: str, value: Any) -> None:
         lines[target_line] = f'{indent}{leaf}: {formatted}'
         path.write_text('\n'.join(lines))
     else:
-        # Fallback: full YAML rewrite (loses comments but always works)
         raw = yaml.safe_load(content) or {}
         target = raw
         for k in keys[:-1]:
@@ -462,44 +481,26 @@ class ConfigUpdateRequest(BaseModel):
 
 
 @app.post("/api/config")
-def update_config(req: ConfigUpdateRequest):
+async def update_config(req: ConfigUpdateRequest, request: Request):
     """Update a single value in config.yaml by dotted key path."""
+    await _check_auth(request)
     _update_yaml_value(req.key_path, req.value)
     _reload_config()
     return {"updated": req.key_path, "value": req.value}
 
 
-class ProviderSwitchRequest(BaseModel):
-    provider: str
-
-
-@app.post("/api/provider")
-def switch_provider(req: ProviderSwitchRequest):
-    """Switch the active LLM provider."""
-    valid = registry.list_providers()
-    if req.provider not in valid:
-        raise HTTPException(400, f"Unknown provider '{req.provider}'. Available: {valid}")
-    _update_yaml_value("provider.active", req.provider)
-    _reload_config()
-    return {"active": req.provider}
-
-
 @app.get("/api/providers")
 def list_providers():
-    """List providers and their availability."""
+    """List providers and their availability (Ollama only)."""
     config = _get_config()
-    providers = []
-    for name in registry.list_providers():
-        try:
-            cls = registry.get_provider(name)
-            settings = getattr(config.provider, name)
-            instance = cls(settings.model_dump())
-            available = instance.is_available()
-        except Exception:
-            available = False
-        providers.append({"name": name, "available": available,
-                          "active": name == config.provider.active})
-    return {"providers": providers}
+    try:
+        cls = registry.get_provider("ollama")
+        settings = config.provider.ollama
+        instance = cls(settings.model_dump())
+        available = instance.is_available()
+    except Exception:
+        available = False
+    return {"providers": [{"name": "ollama", "available": available, "active": True}]}
 
 
 @app.get("/api/tools")
@@ -521,8 +522,10 @@ def get_metrics():
 # ── Agent toggle / logs / outputs ────────────────────────────────────────────
 
 @app.patch("/api/agents/{agent_name}/toggle")
-def toggle_agent(agent_name: str):
+async def toggle_agent(agent_name: str, request: Request):
     """Toggle an agent's enabled/disabled state in config."""
+    await _check_auth(request)
+    _validate_agent_name_param(agent_name)
     config = _reload_config()
     agent_cfg = config.agents.get(agent_name, {})
     new_state = not agent_cfg.get("enabled", True)
@@ -534,6 +537,7 @@ def toggle_agent(agent_name: str):
 @app.get("/api/logs/{agent_name}")
 def get_agent_logs(agent_name: str, lines: int = 200):
     """Get recent log entries for a specific agent from audit.log."""
+    _validate_agent_name_param(agent_name)
     project_root = Path(_config_path).resolve().parent
     log_path = project_root / "logs" / "audit.log"
     if not log_path.exists():
@@ -555,7 +559,6 @@ def get_agent_logs(agent_name: str, lines: int = 200):
     except Exception:
         pass
 
-    # Return last N entries
     return {"lines": matched[-lines:], "total": len(matched)}
 
 
@@ -605,8 +608,9 @@ def get_output(path: str):
 
 
 @app.delete("/api/outputs/{path:path}")
-def delete_output(path: str):
+async def delete_output(path: str, request: Request):
     """Delete a specific output file."""
+    await _check_auth(request)
     project_root = Path(_config_path).resolve().parent
     output_dir = project_root / "output"
     target = (output_dir / path).resolve()
@@ -623,6 +627,8 @@ def delete_output(path: str):
 @app.get("/api/audit-log")
 def get_audit_log(limit: int = 100, offset: int = 0, agent: str | None = None):
     """Paginated audit log entries."""
+    if agent:
+        _validate_agent_name_param(agent)
     project_root = Path(_config_path).resolve().parent
     log_path = project_root / "logs" / "audit.log"
     if not log_path.exists():
@@ -645,7 +651,6 @@ def get_audit_log(limit: int = 100, offset: int = 0, agent: str | None = None):
     except Exception:
         pass
 
-    # Return in reverse chronological order
     entries.reverse()
     total = len(entries)
     page = entries[offset:offset + limit]
@@ -656,7 +661,6 @@ def get_audit_log(limit: int = 100, offset: int = 0, agent: str | None = None):
 
 @app.get("/api/metrics/history")
 def get_metrics_history(agent: str | None = None, range: int = 24):
-    """Get time-series metrics data points."""
     if _metrics_store is None:
         return {"data": [], "range_hours": range}
     data = _metrics_store.query(agent=agent, range_hours=range)
@@ -665,7 +669,6 @@ def get_metrics_history(agent: str | None = None, range: int = 24):
 
 @app.get("/api/metrics/hourly")
 def get_metrics_hourly(agent: str | None = None, range: int = 168):
-    """Get hourly rollup of metrics."""
     if _metrics_store is None:
         return {"data": [], "range_hours": range}
     data = _metrics_store.query_hourly(agent=agent, range_hours=range)
@@ -674,7 +677,6 @@ def get_metrics_hourly(agent: str | None = None, range: int = 168):
 
 @app.get("/api/metrics/export")
 def export_metrics(agent: str | None = None, range: int = 24, format: str = "csv"):
-    """Export metrics as CSV."""
     if _metrics_store is None:
         return PlainTextResponse("No metrics data available", status_code=404)
     csv_data = _metrics_store.export_csv(agent=agent, range_hours=range)
@@ -689,7 +691,6 @@ def export_metrics(agent: str | None = None, range: int = 24, format: str = "csv
 
 @app.get("/api/queue/dlq")
 def list_dlq(agent: str | None = None, limit: int = 100, offset: int = 0):
-    """View dead-letter queue entries."""
     if _job_queue is None:
         return {"entries": [], "total": 0}
     entries = _job_queue.list_dlq(agent=agent, limit=limit, offset=offset)
@@ -698,19 +699,18 @@ def list_dlq(agent: str | None = None, limit: int = 100, offset: int = 0):
 
 
 @app.post("/api/queue/dlq/{job_id}/retry")
-def retry_dlq_job(job_id: str):
-    """Retry a dead-letter queue job."""
+async def retry_dlq_job(job_id: str, request: Request):
+    await _check_auth(request)
     if _job_queue is None:
         raise HTTPException(500, "Job queue not initialized")
     job = _job_queue.retry_from_dlq(job_id)
     if job is None:
-        raise HTTPException(404, f"DLQ job '{job_id}' not found")
+        raise HTTPException(404, "DLQ job not found")
     return {"retried": True, "new_job_id": job.id}
 
 
 @app.get("/api/queue/stats")
 def get_queue_stats():
-    """Get job queue statistics."""
     if _job_queue is None:
         return {"stats": {}, "dlq_count": 0}
     stats = _job_queue.get_stats()
@@ -722,7 +722,6 @@ def get_queue_stats():
 
 @app.get("/api/triggers")
 def list_triggers():
-    """List all registered triggers and their status."""
     if _trigger_manager is None:
         return {"triggers": []}
     return {"triggers": _trigger_manager.list_triggers()}
@@ -734,15 +733,15 @@ class TriggerFireRequest(BaseModel):
 
 
 @app.post("/api/triggers/fire")
-def fire_manual_trigger(req: TriggerFireRequest):
-    """Manually fire a trigger for an agent."""
+async def fire_manual_trigger(req: TriggerFireRequest, request: Request):
+    await _check_auth(request)
+    _validate_agent_name_param(req.agent)
     if _trigger_manager is None:
         raise HTTPException(500, "Trigger manager not initialized")
     triggers = _trigger_manager.list_triggers()
     matched = [t for t in triggers if t["name"] == req.agent]
     if not matched:
-        raise HTTPException(404, f"No trigger registered for agent '{req.agent}'")
-    # Enqueue a job directly as manual fire
+        raise HTTPException(404, "No trigger registered for this agent")
     if _job_queue:
         _job_queue.enqueue(req.agent, {"trigger": "manual"})
     return {"fired": True, "agent": req.agent}
@@ -751,15 +750,13 @@ def fire_manual_trigger(req: TriggerFireRequest):
 # ── Bootstrap helpers ────────────────────────────────────────────────────────
 
 def _ensure_config(config_path: str) -> str:
-    """Copy config.example.yaml → config.yaml if the target doesn't exist."""
     target = Path(config_path)
     if target.exists():
         return config_path
 
-    # Walk upward from CWD and the package dir looking for the example file
     candidates = [
         Path.cwd() / "config.example.yaml",
-        Path(__file__).resolve().parents[3] / "config.example.yaml",  # repo root
+        Path(__file__).resolve().parents[3] / "config.example.yaml",
     ]
     for src in candidates:
         if src.exists():
@@ -767,24 +764,22 @@ def _ensure_config(config_path: str) -> str:
             logger.info("bootstrap.config_copied", src=str(src), dest=str(target))
             return config_path
 
-    return config_path  # no example found, load_config will use defaults
+    return config_path
 
 
 def _ensure_ollama() -> None:
-    """If Ollama is installed but not serving, start it as a background service."""
     ollama_bin = shutil.which("ollama")
     if not ollama_bin:
-        return  # not installed, nothing we can do
+        return
 
     import httpx
     try:
         resp = httpx.get("http://localhost:11434/api/tags", timeout=2.0)
         if resp.status_code == 200:
-            return  # already running
+            return
     except Exception:
         pass
 
-    # Prefer brew services (runs as a proper background daemon, doesn't block terminal)
     brew_bin = shutil.which("brew")
     if brew_bin:
         try:
@@ -799,7 +794,6 @@ def _ensure_ollama() -> None:
         except Exception:
             pass
 
-    # Fallback: start ollama serve detached
     try:
         subprocess.Popen(
             [ollama_bin, "serve"],
@@ -815,16 +809,43 @@ def _ensure_ollama() -> None:
 
 def run_server(config_path: str = "config.yaml", host: str = "127.0.0.1", port: int = 8420,
                open_browser: bool = True):
-    """Launch the dashboard server."""
-    global _config_path, _metrics_store, _job_queue
+    """Launch the dashboard server.
+
+    Security:
+    - Always binds to 127.0.0.1 (localhost only)
+    - Generates a per-session auth token printed to terminal
+    - Adds strict CORS middleware (localhost origins only)
+    """
+    global _config_path, _metrics_store, _job_queue, _auth_token
+
+    # Security: force localhost binding
+    if host != "127.0.0.1" and host != "localhost":
+        logger.warning("server.remote_bind_blocked",
+                      requested_host=host,
+                      msg="Forcing bind to 127.0.0.1 — remote access is not allowed")
+        host = "127.0.0.1"
 
     setup_logging()
 
-    # Bootstrap: ensure config file and local provider are ready
+    # Generate per-session auth token
+    _auth_token = _generate_auth_token()
+
+    # Add strict CORS middleware — localhost only
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            f"http://127.0.0.1:{port}",
+            f"http://localhost:{port}",
+        ],
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PATCH", "DELETE"],
+        allow_headers=["X-Auth-Token", "Content-Type"],
+    )
+
+    # Bootstrap
     config_path = _ensure_config(config_path)
     _config_path = config_path
     _ensure_ollama()
-
     discover_all()
 
     # Initialize persistent metrics store
@@ -853,7 +874,6 @@ def run_server(config_path: str = "config.yaml", host: str = "127.0.0.1", port: 
     try:
         from secure_agents.core.trigger_manager import TriggerManager
         _trigger_manager = TriggerManager()
-        # Register triggers from config
         config = _get_config()
         for agent_name, agent_cfg in config.agents.items():
             triggers_cfg = agent_cfg.get("triggers", [])
@@ -870,6 +890,15 @@ def run_server(config_path: str = "config.yaml", host: str = "127.0.0.1", port: 
         logger.info("server.triggers_initialized", count=len(_trigger_manager.list_triggers()))
     except Exception as e:
         logger.warning("server.trigger_init_failed", error=str(e))
+
+    # Print auth token to terminal
+    print(f"\n{'='*60}")
+    print(f"  Secure Agents Dashboard")
+    print(f"  http://{host}:{port}")
+    print(f"{'='*60}")
+    print(f"  Auth token (auto-injected into dashboard):")
+    print(f"  {_auth_token}")
+    print(f"{'='*60}\n")
 
     if open_browser:
         threading.Timer(1.5, lambda: webbrowser.open(f"http://{host}:{port}")).start()

@@ -176,9 +176,6 @@ def auth_setup():
 
     pairs = [
         ("email_password", "Email password / Gmail App Password"),
-        ("anthropic_api_key", "Anthropic API key"),
-        ("openai_api_key", "OpenAI API key"),
-        ("gemini_api_key", "Gemini API key"),
     ]
     for key, label in pairs:
         value = click.prompt(f"  {label}", default="", hide_input=True, show_default=False)
@@ -338,22 +335,17 @@ def validate(ctx):
             status = "enabled" if enabled else "disabled"
             click.echo(f"  - {name}: {status}")
 
-    # Check optional dependencies
-    for pkg, label in [("anthropic", "Anthropic"), ("openai", "OpenAI"), ("google.genai", "Gemini")]:
-        try:
-            __import__(pkg)
-            click.echo(f"[OK] {label} SDK installed")
-        except ImportError:
-            warnings.append(f"{label} SDK not installed (optional)")
-
-    # Check Docker
+    # Check Docker (required for sandbox)
     try:
         import docker
         client = docker.from_env()
         client.ping()
-        click.echo("[OK] Docker is available")
+        click.echo("[OK] Docker is available (sandbox ready)")
     except Exception:
-        warnings.append("Docker not available (sandbox will use subprocess fallback)")
+        warnings.append(
+            "Docker not available. Sandbox mode (enabled by default) requires Docker. "
+            "Install Docker or set security.sandbox_enabled: false in config (NOT RECOMMENDED)."
+        )
 
     # Report
     if warnings:

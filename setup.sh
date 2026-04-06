@@ -8,7 +8,6 @@
 # Usage:
 #   bash setup.sh                          # set up all enabled agents
 #   bash setup.sh nda_reviewer             # set up a specific agent
-#   bash setup.sh --provider anthropic     # use Anthropic instead of Ollama
 #   bash setup.sh --dry-run                # preview without changes
 #
 # All arguments are passed through to `secure-agents setup`.

@@ -72,13 +72,9 @@ agents:
       allowed_file_types: [.pdf]  # Only PDFs
     storage:
       output_dir: ./output/your_agent  # Separate output dir
-    # Optionally use a different LLM provider:
-    provider:
-      override: anthropic
-      model: claude-sonnet-4-20250514
 ```
 
-**You don't need to touch `defaults` or any other agent's config.** Your agent gets its own isolated settings.
+**You don't need to touch `defaults` or any other agent's config.** Your agent gets its own isolated settings. Note: only Ollama (local inference) is supported -- no cloud providers are available, so no data ever leaves the machine.
 
 ## Step 4: Run It
 
@@ -106,22 +102,19 @@ These tools are already registered and can be reused by any agent:
 
 Each agent gets its own tool instances with its own config, so two agents can use `document_parser` with different file size limits.
 
-## Available Providers
+## Provider
 
-All providers share the same interface. Your agent doesn't need to know which one is active:
+Only Ollama (local inference) is supported. No cloud providers (Anthropic, OpenAI, Gemini) are available -- all LLM processing stays on-machine. Your agent uses the provider interface without needing to know the implementation details.
 
-- `ollama` - Local inference (default)
-- `anthropic` - Claude API
-- `openai` - GPT API
-- `gemini` - Gemini API
-
-The global default is set in `provider.active`. An individual agent can override it with `provider.override` in its config section.
+The global provider is set in `provider.active` (must be `ollama`).
 
 ## Tips
 
 - **Keep agents thin** - Put workflow logic in `tick()`, delegate I/O to tools
 - **Reuse tools** - Don't reimplement email or document parsing
 - **Use `_stop_event.wait()`** instead of `time.sleep()` so agents shut down cleanly
-- **Use the provider interface** - Don't import provider SDKs directly
+- **Use the provider interface** - Call `self.provider.complete(messages)` rather than importing Ollama directly
 - **Log metadata only** - Never log document content or PII
 - **Override only what you need** - Your agent inherits all defaults; only specify what's different
+- **Agent names must be valid** - Lowercase alphanumeric characters and underscores only
+- **Sandbox is on by default** - Docker is required; if Docker is missing and sandbox is enabled, the agent will fail with a hard error

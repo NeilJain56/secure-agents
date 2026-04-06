@@ -4,6 +4,9 @@
 # IMPORTANT: Credentials (passwords, API keys) are NEVER stored in this file.
 # They are resolved from: macOS Keychain > environment variables > OAuth2 tokens.
 # Run `secure-agents auth setup` to configure credentials securely.
+#
+# SECURITY: Only local LLM inference (Ollama) is supported.
+# No data ever leaves your machine. Cloud providers are not available.
 
 # ─── Defaults ────────────────────────────────────────────────────────────────
 # Shared fallback values inherited by all agents.
@@ -15,18 +18,20 @@ defaults:
       port: 993
       username: your-email@gmail.com
       auth_method: app_password  # "oauth2" or "app_password"
-      use_ssl: true
+      # SSL is always enforced. To disable (NOT RECOMMENDED):
+      # allow_insecure_connections: true
     smtp:
       host: smtp.gmail.com
       port: 587
       username: your-email@gmail.com
       auth_method: app_password
-      use_tls: true
+      # TLS is always enforced. To disable (NOT RECOMMENDED):
+      # allow_insecure_connections: true
 
   security:
     max_file_size_mb: 50
     allowed_file_types: [.pdf, .docx, .doc]
-    sandbox_enabled: false
+    sandbox_enabled: true          # Parse documents inside Docker (recommended)
     audit_log_path: ./logs/audit.log
     temp_dir: ./temp
     auto_cleanup: true
@@ -35,26 +40,14 @@ defaults:
     output_dir: ./output
     retention_days: 90
 
-# ─── LLM Providers ──────────────────────────────────────────────────────────
-# API keys are read from keychain/env vars, never from this file.
+# ─── LLM Provider ──────────────────────────────────────────────────────────
+# Only Ollama (local inference) is supported. No data leaves your machine.
 provider:
   active: ollama
 
   ollama:
     host: http://localhost:11434
     model: llama3.2
-    temperature: 0.1
-
-  anthropic:
-    model: claude-sonnet-4-20250514
-    temperature: 0.1
-
-  openai:
-    model: gpt-4o
-    temperature: 0.1
-
-  gemini:
-    model: gemini-2.5-flash
     temperature: 0.1
 
 # ─── Concurrency ────────────────────────────────────────────────────────────
@@ -109,6 +102,3 @@ agents:
   #   storage:
   #     output_dir: ./output/contracts   # Separate output directory
   #     retention_days: 365              # Keep for a year
-  #   provider:
-  #     override: anthropic              # Use Claude instead of Ollama
-  #     model: claude-sonnet-4-20250514

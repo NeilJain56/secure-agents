@@ -10,7 +10,7 @@ Secure Agents has three component types, all registered via decorators:
 
 - **Agent** (`@register_agent`) — Orchestrates a workflow by composing tools + an LLM provider. Lives in `src/secure_agents/agents/<name>/agent.py`.
 - **Tool** (`@register_tool`) — A reusable capability (email, parsing, storage, API calls). Lives in `src/secure_agents/tools/<name>.py`.
-- **Provider** (`@register_provider`) — An LLM backend (Ollama, Anthropic, OpenAI, Gemini). Lives in `src/secure_agents/providers/<name>.py`.
+- **Provider** (`@register_provider`) — LLM backend (Ollama only -- local inference, no data leaves the machine). Lives in `src/secure_agents/providers/ollama.py`.
 
 All three are auto-discovered at import time. No manual registration required.
 
@@ -83,14 +83,13 @@ class BaseProvider(ABC):
 
 ---
 
-## Existing Providers
+## Provider
+
+Only Ollama (local inference) is supported. Cloud providers (Anthropic, OpenAI, Gemini) have been removed entirely. No data ever leaves the machine.
 
 | Provider | Config Key | Default Model |
 |----------|-----------|---------------|
 | Ollama (local) | `ollama` | `llama3.2` |
-| Anthropic | `anthropic` | `claude-sonnet-4-20250514` |
-| OpenAI | `openai` | `gpt-4o` |
-| Gemini | `gemini` | `gemini-2.5-flash` |
 
 ---
 
@@ -104,6 +103,13 @@ defaults:
     imap: { host: imap.gmail.com, port: 993 }
   security:
     max_file_size_mb: 50
+    sandbox_enabled: true       # Default, requires Docker
+
+provider:
+  active: ollama                # Only supported provider
+  ollama:
+    host: http://localhost:11434
+    model: llama3.2
 
 agents:
   my_agent:
@@ -128,10 +134,18 @@ tool_configs["your_tool"] = merged.get("your_tool", {})
 ## Security Rules
 
 1. **Never log document content or PII.** Use `structlog.get_logger()` and log metadata only (filenames, counts, status).
-2. **Never store credentials in config.** Use `get_credential()` or `get_oauth2_token()` from `core/credentials.py`.
-3. **Sanitize text before LLM.** Call `sanitize_text()` from `core/security.py` on any user/document content before passing to the provider.
-4. **Validate files before parsing.** Call `validate_file()` from `core/security.py` to check type and size.
+2. **Never store credentials in config.** Use `get_credential()` or `get_oauth2_token()` from `core/credentials.py`. OAuth2 client_secret is stored in Keychain, not on disk.
+3. **Sanitize text before LLM.** Call `sanitize_text()` from `core/security.py` on any user/document content before passing to the provider. Expanded to 20+ prompt injection patterns with unicode normalization.
+4. **Validate files before parsing.** Call `validate_file()` from `core/security.py` to check type and size. Uses magic byte validation (not just extension checks).
 5. **Use the audit log.** `AuditLog` from `core/security.py` records metadata-only events.
+6. **Sandbox is enabled by default.** Docker is required. No subprocess fallback -- if Docker is missing and sandbox is enabled, it fails with a hard error. Document parsing routes through the Docker sandbox.
+7. **Path traversal protection.** File storage prevents path traversal attacks. Do not construct file paths from raw user input.
+8. **TLS/SSL always enforced on email.** No `use_tls`/`use_ssl` toggles -- set `allow_insecure_connections: true` to override (not recommended).
+9. **Agent names validated.** Lowercase alphanumeric + underscores only.
+10. **Error messages sanitized.** API responses do not leak internal details, stack traces, or credentials.
+11. **Job queue DB permissions.** The SQLite job queue DB file has 0o600 permissions (owner read/write only).
+12. **Dashboard hardened.** CORS restrictions, per-session auth token, binds to 127.0.0.1 only.
+13. **Ollama only.** No cloud providers -- no data ever leaves the machine.
 
 ---
 
@@ -174,9 +188,9 @@ Run tests: `pytest tests/ -v`
 
 ## Naming Conventions
 
-- Agent names: `snake_case` (e.g., `nda_reviewer`, `contract_analyzer`)
+- Agent names: lowercase alphanumeric + underscores only (e.g., `nda_reviewer`, `contract_analyzer`) -- validated at registration
 - Tool names: `snake_case` (e.g., `email_reader`, `slack_notifier`)
-- Provider names: lowercase (e.g., `ollama`, `anthropic`)
+- Provider names: lowercase (only `ollama` is supported)
 - Agent directories: `src/secure_agents/agents/<agent_name>/`
 - Tool files: `src/secure_agents/tools/<tool_name>.py`
 - Config keys: `snake_case` throughout YAML

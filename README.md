@@ -2,7 +2,7 @@
   <h1 align="center">Secure Agents</h1>
   <p align="center">
     An open-source framework for building AI agents that run entirely on your hardware.<br/>
-    Modular. Secure by default. No data leaves your machine.
+    Local-only LLM inference. No data leaves your machine. Secure by default.
   </p>
 </p>
 
@@ -19,21 +19,24 @@
 
 ## What is Secure Agents?
 
-Secure Agents is a framework for running AI-powered automation workflows on your own machine. You define **agents** that orchestrate **tools** (email, document parsing, storage) and **LLM providers** (Ollama, Anthropic, OpenAI, Gemini) — all wired together through config, not code.
+Secure Agents is a framework for running AI-powered automation workflows **entirely on your own machine**. You define **agents** that orchestrate **tools** (email, document parsing, storage) and a **local LLM** (via [Ollama](https://ollama.com)) — all wired together through config, not code.
+
+**No data ever leaves your machine.** Cloud LLM providers have been deliberately removed from the codebase. Every document, every email, every LLM call stays on your hardware.
 
 It was built for professionals who handle sensitive data — lawyers, financial analysts, compliance officers — but the framework is general-purpose. Any workflow you can describe, you can automate.
 
-**The included NDA Reviewer agent** is a working example: it monitors a Gmail inbox for NDA documents, runs AI-powered clause-by-clause risk analysis using a local LLM, and emails the findings back to the sender. No document ever leaves your laptop.
+**The included NDA Reviewer agent** is a working example: it monitors a Gmail inbox for NDA documents, runs AI-powered clause-by-clause risk analysis using a local LLM, and emails the findings back to the sender.
 
 ### Why Secure Agents?
 
 | | Cloud AI Platforms | Secure Agents |
 |---|---|---|
-| **Data privacy** | Documents sent to third-party servers | Documents never leave your machine |
+| **Data privacy** | Documents sent to third-party servers | **Documents never leave your machine** |
+| **LLM inference** | Runs on vendor servers | Runs locally via Ollama |
 | **Credentials** | Stored in config files or dashboards | macOS Keychain, never in plaintext |
-| **Customization** | Vendor lock-in, limited extensibility | Plugin system — add agents/tools/providers with one decorator |
-| **Infrastructure** | Requires cloud accounts, billing, networking | `bash setup.sh` on a Mac. That's it. |
-| **LLM flexibility** | Single provider | Swap between Ollama (local), Anthropic, OpenAI, Gemini via config |
+| **Document parsing** | Server-side, you trust the vendor | Sandboxed in Docker — no network, read-only, ephemeral |
+| **Customization** | Vendor lock-in, limited extensibility | Plugin system — add agents/tools with one decorator |
+| **Infrastructure** | Cloud accounts, billing, networking | `bash setup.sh` on a Mac. That's it. |
 
 ---
 
@@ -51,7 +54,7 @@ source .venv/bin/activate
 # Store credentials in macOS Keychain (never in files)
 secure-agents auth setup
 
-# Edit config with your email, provider choice, etc.
+# Edit config with your email settings
 cp config.example.yaml config.yaml
 nano config.yaml
 
@@ -65,27 +68,42 @@ secure-agents start nda_reviewer
 secure-agents ui
 ```
 
+### Requirements
+
+- **macOS** (Keychain integration; Linux support planned)
+- **Python 3.11+**
+- **Ollama** (local LLM inference; installed by `setup.sh`)
+- **Docker** (required — sandbox is enabled by default)
+
 ---
 
 ## Security
 
-This framework was designed from the ground up for sensitive data. Every layer assumes the data is confidential.
+This framework was designed from the ground up to be **secure by default**. Every setting ships in its most restrictive state. You must explicitly opt out of security features — not opt in.
 
-### 1. Zero data exfiltration by default
+### 1. Zero data egress — enforced, not configurable
 
-With Ollama (the default provider), **no data ever leaves your machine**. The LLM runs as a local process. Cloud providers (Anthropic, OpenAI, Gemini) are explicit opt-in via config — the framework never silently sends data anywhere.
+Cloud LLM providers (Anthropic, OpenAI, Gemini) have been **removed from the codebase**. Not disabled — deleted. There is no config option to send data to an external API. All LLM inference runs locally via Ollama.
 
-### 2. Credentials never touch disk in plaintext
+### 2. Sandboxed document parsing (enabled by default)
+
+Document parsing (PDF, DOCX) runs inside **Docker containers** with:
+- No network access (`--network=none`)
+- Read-only filesystem (except `/output`)
+- Memory limit (512MB), CPU throttle (50%)
+- Automatic destruction after each job
+
+If Docker is missing and sandbox is enabled, the framework **refuses to parse** — it does not silently fall back to native execution. To disable the sandbox, you must explicitly set `security.sandbox_enabled: false` (not recommended).
+
+### 3. Credentials never touch disk in plaintext
 
 Passwords and API keys are **never stored in config files**. The credential resolution chain:
 
 1. **macOS Keychain** — encrypted by the OS, locked to your user account
 2. **Environment variables** — for CI/CD or containers
-3. **OAuth2 tokens** — stored with `0600` permissions, auto-refreshed
+3. **OAuth2 tokens** — access/refresh tokens stored with `0600` permissions; the OAuth2 `client_secret` is stored in the Keychain, never on disk
 
-`config.yaml` contains only non-secret settings. Safe to commit to version control.
-
-### 3. Native Gmail OAuth2
+### 4. Native Gmail OAuth2
 
 No Google App Passwords required. One command sets up OAuth2 with token refresh:
 
@@ -93,49 +111,57 @@ No Google App Passwords required. One command sets up OAuth2 with token refresh:
 secure-agents auth gmail path/to/client_secrets.json
 ```
 
-### 4. Sandboxed execution
+### 5. File validation with magic bytes
 
-Document parsing and LLM inference can run inside Docker containers:
-- No network access (`--network=none`)
-- Read-only filesystem (except `/output`)
-- Memory and CPU limits
-- Auto-destroyed after each job
-
-Falls back to subprocess isolation if Docker is unavailable.
-
-### 5. Input sanitization
-
-All document text is sanitized before reaching the LLM. Known prompt injection patterns are filtered: instruction overrides, role-switching, system prompt extraction attempts. Defense-in-depth — the system prompt hierarchy is the primary defense; sanitization is a secondary filter.
-
-### 6. File validation
-
-Every file is validated before parsing:
+Every file is validated before any parsing library touches it:
+- **Magic byte verification** — a `.pdf` must start with `%PDF`, a `.docx` must start with `PK` (ZIP). Renamed executables are rejected.
 - File type allowlist (`.pdf`, `.docx` by default)
 - Size limits (configurable per agent)
 - Path traversal prevention
-- Filename sanitization
+- Filename sanitization (alphanumeric, dots, hyphens, underscores only; max 255 chars)
 
-### 7. Ephemeral processing
+### 6. Input sanitization (20+ patterns)
 
-Temp files are cleaned up after processing. Sandbox environments are destroyed after each job. When using Docker, the LLM instance cannot retain information between analyses.
+All document text is sanitized before reaching the LLM. The sanitizer:
+- Detects **20+ prompt injection patterns** (instruction overrides, role switching, system prompt extraction, data exfiltration attempts)
+- Applies **Unicode normalization** (NFKC) to prevent homoglyph-based bypasses
+- Logs detection events to the audit trail
 
-### 8. Metadata-only audit logging
+### 7. Path traversal protection
+
+File storage operations are **jailed** within the configured output directory. Both filenames and subfolder names are sanitized and resolved, then verified to remain within bounds. Directory traversal (`../`) and absolute paths are rejected.
+
+### 8. Ephemeral processing
+
+Temp files are cleaned up after processing. Sandbox containers are destroyed after each job. The LLM instance cannot retain information between analyses.
+
+### 9. Metadata-only audit logging
 
 The audit log records what happened, when, and to which file — but **never logs document content, email bodies, or PII**. Full operational visibility without creating a second copy of sensitive data.
 
-### 9. Minimal attack surface
+### 10. Hardened dashboard
 
-- SQLite for the job queue (no Redis/RabbitMQ to expose)
-- No open ports in agent mode (dashboard is opt-in)
+The web dashboard:
+- Binds to **`127.0.0.1` only** — remote binding is blocked even if requested
+- Enforces **strict CORS** — only `localhost` origins allowed
+- Requires a **per-session auth token** (generated at startup, printed to terminal, auto-injected into the dashboard) on all state-changing endpoints
+- **Sanitizes error messages** — no internal paths, stack traces, or credentials leak to clients
+
+### 11. Minimal attack surface
+
+- SQLite for the job queue (no Redis/RabbitMQ to expose) with `0600` file permissions
+- No open ports in agent mode (dashboard is opt-in, localhost only)
 - Only local connections to your mail server
+- TLS/SSL **always enforced** on email connections — no `use_tls: false` toggle
+- Agent names validated (`^[a-z][a-z0-9_]{0,63}$`) to prevent injection via config
 - Pinned, minimal dependencies
 - No telemetry or analytics
 
-### 10. Supply chain hardening
+### 12. Supply chain hardening
 
 - Dependencies specified with minimum versions in `pyproject.toml`
-- Docker sandbox uses minimal `python:3.12-slim` base
-- Containers run as non-root
+- Docker sandbox uses minimal `python:3.12-slim` base with pinned pip packages
+- Containers run as a non-root user
 - No third-party runtime services required
 
 ---
@@ -154,11 +180,13 @@ The audit log records what happened, when, and to which file — but **never log
             +-------+ +------+ +----------+
                |         |          |
           tick() loop  execute()  complete()
+                                     |
+                              Ollama (local)
 ```
 
 ### Agents
 
-Workflow orchestrators. Each agent defines *what* to do by composing tools and an LLM provider. Agents are thin — they never implement I/O directly. Adding a new agent is one file and one decorator.
+Workflow orchestrators. Each agent defines *what* to do by composing tools and the LLM provider. Agents are thin — they never implement I/O directly. Adding a new agent is one file and one decorator.
 
 ### Tools
 
@@ -166,21 +194,18 @@ Reusable capabilities shared across agents. Declare which tools an agent needs i
 
 | Tool | Description |
 |------|-------------|
-| `email_reader` | Monitor IMAP inbox, download attachments |
-| `email_sender` | Send emails via SMTP with attachments |
-| `document_parser` | Extract text from PDF and DOCX securely |
-| `file_storage` | Save and load JSON reports locally |
+| `email_reader` | Monitor IMAP inbox, download attachments (SSL enforced) |
+| `email_sender` | Send emails via SMTP with attachments (TLS enforced) |
+| `document_parser` | Extract text from PDF/DOCX (sandboxed via Docker) |
+| `file_storage` | Save and load JSON reports locally (path-traversal protected) |
 
-### Providers
+### Provider
 
-LLM backends with a unified interface. Switch between local and cloud with one config line:
+Only **Ollama** (local inference) is supported. No data leaves your machine.
 
 | Provider | Type | Default Model |
 |----------|------|---------------|
 | `ollama` | Local | `llama3.2` |
-| `anthropic` | Cloud | `claude-sonnet-4-20250514` |
-| `openai` | Cloud | `gpt-4o` |
-| `gemini` | Cloud | `gemini-2.5-flash` |
 
 ### Plugin System
 
@@ -189,7 +214,6 @@ All components register via decorators and are auto-discovered at startup:
 ```python
 @register_agent("my_agent")     # Agents
 @register_tool("my_tool")       # Tools
-@register_provider("my_llm")    # Providers
 ```
 
 No manual imports or wiring. Drop a file in the right directory, add a decorator, and it's available.
@@ -277,8 +301,6 @@ summary. Group by topic. I want to review the summaries on the dashboard.
 
 ### Creating New Tools with Claude Code
 
-You can also build new tools:
-
 ```
 @.claude/agent-development.md
 
@@ -292,9 +314,9 @@ interface and update builder.py to wire the config.
 
 The file `.claude/agent-development.md` contains everything Claude Code needs:
 - Framework contracts (BaseAgent, BaseTool, BaseProvider interfaces)
-- Existing tools and providers with their parameters
+- Existing tools and provider with their parameters
 - Config inheritance model
-- Security rules and naming conventions
+- All 13 security rules
 - Testing patterns
 - The NDA Reviewer as a reference implementation
 
@@ -307,6 +329,13 @@ This file is checked into the repo. Keep it updated as you add new tools or chan
 `config.yaml` uses a **defaults + per-agent override** model:
 
 ```yaml
+# Only Ollama (local) is supported — no cloud providers
+provider:
+  active: ollama
+  ollama:
+    host: http://localhost:11434
+    model: llama3.2
+
 # Shared defaults — every agent inherits these
 defaults:
   email:
@@ -317,6 +346,7 @@ defaults:
   security:
     max_file_size_mb: 50
     allowed_file_types: [.pdf, .docx]
+    sandbox_enabled: true     # Requires Docker (default: on)
 
 # Each agent inherits defaults and overrides what it needs
 agents:
@@ -330,11 +360,9 @@ agents:
     tools: [email_reader, document_parser, file_storage]
     security:
       max_file_size_mb: 200          # Larger files for this agent
-    provider:
-      override: anthropic            # Use Claude instead of Ollama
 ```
 
-Two agents can have entirely different file size limits, output directories, or LLM providers without affecting each other. See `config.example.yaml` for the full annotated template.
+Two agents can have entirely different file size limits, output directories, or polling intervals without affecting each other. See `config.example.yaml` for the full annotated template.
 
 ---
 
@@ -343,12 +371,12 @@ Two agents can have entirely different file size limits, output directories, or 
 | Command | Description |
 |---------|-------------|
 | `secure-agents start [agents...]` | Start one, several, or all enabled agents |
-| `secure-agents list` | List registered agents, tools, and providers |
-| `secure-agents validate` | Check config, credentials, provider connectivity |
+| `secure-agents list` | List registered agents, tools, and provider |
+| `secure-agents validate` | Check config, Ollama, Docker, credentials |
 | `secure-agents auth setup` | Store credentials in macOS Keychain |
 | `secure-agents auth gmail <secrets.json>` | Set up Gmail OAuth2 |
 | `secure-agents setup [agents...]` | Guided setup wizard |
-| `secure-agents ui` | Launch the web dashboard |
+| `secure-agents ui` | Launch the web dashboard (localhost only) |
 
 ---
 
@@ -361,7 +389,7 @@ A single-page dashboard (no npm, no build step) for monitoring and controlling a
 - **Outputs tab** — Browse and view generated reports
 - **Audit Log tab** — Searchable metadata-only event log
 
-Launch with `secure-agents ui` and open `http://localhost:8000`.
+Launch with `secure-agents ui` and open `http://localhost:8420`. The dashboard binds to localhost only, uses strict CORS, and requires a per-session auth token on all state-changing operations.
 
 ---
 
@@ -374,24 +402,21 @@ src/secure_agents/
     base_tool.py        BaseTool ABC (the tool contract)
     base_provider.py    BaseProvider ABC (the provider contract)
     registry.py         Plugin registry and @register_* decorators
-    config.py           Config loading, deep merge, env var interpolation
+    config.py           Config loading, validation, env var interpolation
     credentials.py      Keychain / env var / OAuth2 credential resolution
-    security.py         File validation, input sanitization, audit log
-    sandbox.py          Docker and subprocess sandboxed execution
+    security.py         File validation (magic bytes), input sanitization, audit log
+    sandbox.py          Docker-only sandboxed execution (no fallback)
     job_queue.py        SQLite-backed job queue with retry and dead-letter
     builder.py          Discovers all plugins and wires agents at startup
 
-  providers/        # LLM backends (all implement the same interface)
+  providers/        # LLM backend (local only)
     ollama.py           Local inference via Ollama
-    anthropic_provider.py
-    openai_provider.py
-    gemini_provider.py
 
   tools/            # Reusable capabilities (shared across agents)
-    email_reader.py     IMAP inbox monitor with attachment download
-    email_sender.py     SMTP email sending
-    document_parser.py  PDF/DOCX text extraction
-    file_storage.py     Local JSON report storage
+    email_reader.py     IMAP inbox monitor (SSL enforced)
+    email_sender.py     SMTP email sending (TLS enforced)
+    document_parser.py  PDF/DOCX text extraction (sandboxed)
+    file_storage.py     Local JSON report storage (path-traversal protected)
     _template.py        Copy this to create a new tool
 
   agents/           # Agent implementations
@@ -399,7 +424,7 @@ src/secure_agents/
     _template/          Copy this directory to create a new agent
 
   ui/               # Web dashboard
-    server.py           FastAPI backend
+    server.py           FastAPI backend (localhost only, auth token, CORS)
     dashboard.html      Single-page frontend (no build step)
 ```
 
@@ -411,24 +436,15 @@ src/secure_agents/
 # Install in development mode
 pip install -e ".[dev]"
 
-# Run tests
+# Run tests (59 tests including security suite)
 pytest tests/ -v
 
-# Validate config and dependencies
+# Validate config, Ollama, Docker
 secure-agents validate
 
 # List all registered components
 secure-agents list
 ```
-
----
-
-## Requirements
-
-- **macOS** (Keychain integration; Linux support planned)
-- **Python 3.11+**
-- **Ollama** (for local LLM inference; installed by `setup.sh`)
-- **Docker** (optional, for sandboxed execution)
 
 ---
 

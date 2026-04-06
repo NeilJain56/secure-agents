@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import mimetypes
 import smtplib
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
@@ -22,7 +21,11 @@ logger = structlog.get_logger()
 
 @register_tool("email_sender")
 class EmailSenderTool(BaseTool):
-    """Sends emails via SMTP with optional attachments."""
+    """Sends emails via SMTP with optional attachments.
+
+    Security: TLS is always enforced. Plaintext SMTP connections are not
+    supported. Set allow_insecure_connections: true to override (NOT RECOMMENDED).
+    """
 
     name = "email_sender"
     description = "Send emails via SMTP with optional attachments"
@@ -33,7 +36,12 @@ class EmailSenderTool(BaseTool):
         self.port = int(self.config.get("port", 587))
         self.username = self.config.get("username", "")
         self.auth_method = self.config.get("auth_method", "app_password")
-        self.use_tls = self.config.get("use_tls", True)
+
+        # TLS is always on unless explicitly overridden (NOT RECOMMENDED)
+        self._allow_insecure = self.config.get("allow_insecure_connections", False)
+        if self._allow_insecure:
+            logger.warning("email_sender.INSECURE_CONNECTION",
+                         msg="TLS is disabled. Credentials may be transmitted in plaintext.")
 
     def _authenticate(self, server: smtplib.SMTP) -> None:
         """Authenticate with the SMTP server using the configured method."""
@@ -79,6 +87,10 @@ class EmailSenderTool(BaseTool):
         if not to or not subject:
             return {"sent": False, "error": "Missing 'to' or 'subject'"}
 
+        # Basic email address validation
+        if "@" not in to or "." not in to.split("@")[-1]:
+            return {"sent": False, "error": f"Invalid email address: {to}"}
+
         try:
             msg = MIMEMultipart()
             msg["From"] = self.username
@@ -101,8 +113,11 @@ class EmailSenderTool(BaseTool):
                 msg.attach(attachment)
 
             with smtplib.SMTP(self.host, self.port) as server:
-                if self.use_tls:
+                # Always use TLS unless explicitly overridden
+                if not self._allow_insecure:
                     server.starttls()
+                else:
+                    logger.warning("email_sender.SENDING_WITHOUT_TLS")
                 self._authenticate(server)
                 server.send_message(msg)
 
