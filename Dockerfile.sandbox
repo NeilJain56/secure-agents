@@ -1,0 +1,21 @@
+# Sandbox container for isolated document analysis
+# No network access, read-only filesystem, ephemeral execution.
+#
+# Build: docker build -t secure-agents-sandbox -f Dockerfile.sandbox .
+
+FROM python:3.12-slim
+
+# No network access will be enforced at runtime via --network=none
+# Install only what's needed for analysis
+RUN pip install --no-cache-dir pdfplumber python-docx && \
+    rm -rf /root/.cache
+
+# Create non-root user
+RUN useradd --create-home --shell /bin/bash sandbox
+USER sandbox
+
+# Working directories
+WORKDIR /workspace
+VOLUME ["/input", "/output"]
+
+ENTRYPOINT ["python"]

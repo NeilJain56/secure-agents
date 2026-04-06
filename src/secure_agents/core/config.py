@@ -1,0 +1,122 @@
+"""Configuration loading from YAML with environment variable interpolation.
+
+Design principle: agent config is self-contained. Each agent entry under
+`agents.<name>` is a freeform dict that the agent owns completely. It can
+specify its own tool settings, file size limits, polling intervals, etc.
+
+The top-level `defaults` section provides fallback values that agents inherit
+if they don't override them. This means adding a new agent never requires
+touching global config sections.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from pathlib import Path
+from typing import Any
+
+import yaml
+from pydantic import BaseModel
+
+
+def _interpolate_env(value: str) -> str:
+    """Replace ${VAR:default} patterns with environment variable values."""
+    pattern = re.compile(r"\$\{([^}:]+)(?::([^}]*))?\}")
+
+    def replacer(match: re.Match) -> str:
+        var_name = match.group(1)
+        default = match.group(2)
+        env_val = os.environ.get(var_name)
+        if env_val is not None:
+            return env_val
+        if default is not None:
+            return default
+        return match.group(0)
+
+    return pattern.sub(replacer, value)
+
+
+def _interpolate_dict(data: dict | list | str) -> dict | list | str:
+    """Recursively interpolate env vars in a config structure."""
+    if isinstance(data, dict):
+        return {k: _interpolate_dict(v) for k, v in data.items()}
+    if isinstance(data, list):
+        return [_interpolate_dict(item) for item in data]
+    if isinstance(data, str):
+        return _interpolate_env(data)
+    return data
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge override into base. Override wins on conflicts."""
+    result = base.copy()
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+class ProviderSettings(BaseModel):
+    host: str = ""
+    model: str = ""
+    temperature: float = 0.1
+
+
+class ProviderConfig(BaseModel):
+    active: str = "ollama"
+    ollama: ProviderSettings = ProviderSettings(host="http://localhost:11434", model="llama3.2")
+    anthropic: ProviderSettings = ProviderSettings(model="claude-sonnet-4-20250514")
+    openai: ProviderSettings = ProviderSettings(model="gpt-4o")
+    gemini: ProviderSettings = ProviderSettings(model="gemini-2.5-flash")
+
+
+class QueueConfig(BaseModel):
+    db_path: str = "./data/jobs.db"
+    max_retries: int = 3
+    retry_delay_seconds: int = 60
+
+
+class AppConfig(BaseModel):
+    """Top-level application config.
+
+    - `defaults`: shared fallback values for all agents (email, security, storage, etc.)
+    - `provider`: LLM provider selection and settings
+    - `queue`: job queue settings
+    - `agents`: per-agent config dicts; each inherits from defaults then overrides
+    """
+    defaults: dict[str, Any] = {}
+    provider: ProviderConfig = ProviderConfig()
+    queue: QueueConfig = QueueConfig()
+    agents: dict[str, dict[str, Any]] = {}
+    max_workers: int = 4  # global maximum concurrent agent threads
+
+    def get_agent_config(self, agent_name: str) -> dict[str, Any]:
+        """Get the merged config for an agent: defaults + agent overrides.
+
+        This is the key to modularity. An agent's config section can override
+        any default without touching global sections. Two agents can have
+        completely different file size limits, email settings, tool configs, etc.
+        """
+        agent_raw = self.agents.get(agent_name, {})
+        return _deep_merge(self.defaults, agent_raw)
+
+
+def load_config(path: str | Path = "config.yaml") -> AppConfig:
+    """Load and validate configuration from a YAML file.
+
+    Environment variables in ${VAR:default} format are interpolated.
+    Falls back to defaults if the file doesn't exist.
+    """
+    path = Path(path)
+
+    if path.exists():
+        with open(path) as f:
+            raw = yaml.safe_load(f) or {}
+        raw = _interpolate_dict(raw)
+    else:
+        raw = {}
+
+    return AppConfig.model_validate(raw)

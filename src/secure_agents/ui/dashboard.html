@@ -1,0 +1,2322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Secure Agents</title>
+<style>
+/* ─── Reset & Base ──────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text-1);
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+/* ─── Variables ─────────────────────────────────────────────────── */
+:root {
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --border: #e2e8f0;
+  --border-hover: #cbd5e1;
+  --text-1: #0f172a;
+  --text-2: #475569;
+  --text-3: #94a3b8;
+  --accent: #6366f1;
+  --accent-hover: #4f46e5;
+  --accent-soft: #eef2ff;
+  --accent-border: #c7d2fe;
+  --green: #22c55e;
+  --green-soft: #f0fdf4;
+  --green-border: #bbf7d0;
+  --red: #ef4444;
+  --red-soft: #fef2f2;
+  --red-border: #fecaca;
+  --amber: #f59e0b;
+  --amber-soft: #fffbeb;
+  --amber-border: #fde68a;
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+  --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.06), 0 2px 4px rgba(0,0,0,0.03);
+  --dur: 150ms;
+  --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+}
+
+/* ─── Header ────────────────────────────────────────────────────── */
+header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba(255,255,255,0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+.header-inner {
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 0 32px;
+  display: flex;
+  flex-direction: column;
+}
+.header-top {
+  height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  color: var(--text-1);
+}
+.brand svg { color: var(--accent); }
+.brand span {
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.selection-info {
+  font-size: 13px;
+  color: var(--text-2);
+  padding-right: 4px;
+}
+
+/* ─── Tabs ──────────────────────────────────────────────────────── */
+.tabs {
+  display: flex;
+  gap: 0;
+  position: relative;
+}
+.tab {
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 530;
+  color: var(--text-3);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color var(--dur) ease, border-color var(--dur) ease;
+  font-family: inherit;
+  position: relative;
+  bottom: -1px;
+}
+.tab:hover { color: var(--text-2); }
+.tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* ─── Buttons ───────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 530;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all var(--dur) ease;
+  white-space: nowrap;
+  font-family: inherit;
+}
+.btn:active { transform: scale(0.97); }
+.btn-primary {
+  background: var(--accent);
+  color: white;
+}
+.btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+.btn-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+.btn-danger {
+  background: var(--red);
+  color: white;
+}
+.btn-danger:hover { background: #dc2626; }
+.btn-outline {
+  background: var(--surface);
+  color: var(--text-2);
+  border-color: var(--border);
+}
+.btn-outline:hover {
+  border-color: var(--border-hover);
+  color: var(--text-1);
+}
+.btn-sm {
+  padding: 5px 12px;
+  font-size: 12px;
+}
+.btn-ghost {
+  background: none;
+  color: var(--text-3);
+  border: none;
+  padding: 6px 8px;
+}
+.btn-ghost:hover { color: var(--text-1); }
+.btn-ghost svg { transition: transform var(--dur) ease; }
+.btn-ghost.open svg { transform: rotate(180deg); }
+
+/* ─── Layout ────────────────────────────────────────────────────── */
+main {
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 28px 32px 80px;
+}
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+.agents-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  gap: 20px;
+}
+
+/* ─── Agent Card ────────────────────────────────────────────────── */
+.agent-card {
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-lg);
+  transition: border-color var(--dur) ease, box-shadow var(--dur) ease;
+}
+.agent-card:hover {
+  box-shadow: var(--shadow-md);
+  border-color: var(--border-hover);
+}
+.agent-card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent), var(--shadow);
+}
+.agent-card.running {
+  border-color: var(--green);
+  box-shadow: 0 0 0 1px var(--green), var(--shadow);
+}
+.card-body { padding: 24px; }
+
+/* Card header row */
+.card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+.card-checkbox {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 2px solid var(--border);
+  cursor: pointer;
+  transition: all var(--dur) ease;
+  position: relative;
+  flex-shrink: 0;
+  margin-top: 2px;
+  background: var(--surface);
+}
+.card-checkbox:hover { border-color: var(--accent); }
+.card-checkbox:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.card-checkbox:checked::after {
+  content: '';
+  display: block;
+  width: 5px;
+  height: 9px;
+  border: solid white;
+  border-width: 0 2px 2px 0;
+  position: absolute;
+  top: 2px;
+  left: 6px;
+  transform: rotate(45deg);
+}
+.card-checkbox:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.card-title-area { flex: 1; min-width: 0; }
+.card-name {
+  font-size: 17px;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+  color: var(--text-1);
+  line-height: 1.3;
+}
+
+/* Status badge */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 530;
+  white-space: nowrap;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.badge-ready { background: var(--green-soft); color: #15803d; }
+.badge-ready .status-dot { background: var(--green); }
+.badge-setup { background: var(--amber-soft); color: #92400e; }
+.badge-setup .status-dot { background: var(--amber); }
+.badge-running { background: var(--green-soft); color: #15803d; }
+.badge-running .status-dot { background: var(--green); animation: pulse 2s infinite; }
+.badge-error { background: var(--red-soft); color: #991b1b; }
+.badge-error .status-dot { background: var(--red); }
+
+/* Card description */
+.card-description {
+  margin-top: 10px;
+  font-size: 14px;
+  color: var(--text-2);
+  line-height: 1.55;
+}
+
+/* Features list */
+.features-list {
+  list-style: none;
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.features-list li {
+  position: relative;
+  padding-left: 15px;
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+.features-list li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.6;
+}
+
+/* Card footer / meta */
+.card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-2);
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+.chip svg { color: var(--text-3); }
+.meta-spacer { flex: 1; }
+
+/* ─── Card Details (expanded) ───────────────────────────────────── */
+.card-details-wrapper {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 300ms ease;
+}
+.card-details-wrapper.open {
+  grid-template-rows: 1fr;
+}
+.card-details {
+  overflow: hidden;
+}
+.card-details-inner {
+  padding: 0 24px 24px;
+}
+.details-divider {
+  height: 1px;
+  background: var(--border);
+  margin-bottom: 20px;
+}
+
+/* Detail sections */
+.detail-section { margin-bottom: 20px; }
+.detail-section:last-child { margin-bottom: 0; }
+.detail-section-title {
+  font-size: 11px;
+  font-weight: 620;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+  margin-bottom: 10px;
+}
+
+/* Setup banner */
+.setup-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--amber-soft);
+  border: 1px solid var(--amber-border);
+  font-size: 13px;
+  color: #92400e;
+  margin-bottom: 16px;
+}
+.setup-banner svg { flex-shrink: 0; }
+
+/* Health check items */
+.check-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 0;
+}
+.check-item + .check-item {
+  border-top: 1px solid var(--border);
+}
+.check-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.check-icon.ok { color: var(--green); }
+.check-icon.error { color: var(--red); }
+.check-icon.warn { color: var(--amber); }
+.check-info { flex: 1; min-width: 0; }
+.check-name {
+  font-size: 13px;
+  font-weight: 530;
+  color: var(--text-1);
+}
+.check-detail {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-top: 1px;
+}
+
+/* Setup action inline form */
+.setup-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.input {
+  flex: 1;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-family: inherit;
+  background: var(--surface);
+  color: var(--text-1);
+  transition: border-color var(--dur) ease;
+}
+.input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.input::placeholder { color: var(--text-3); }
+select.input {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 28px;
+  cursor: pointer;
+}
+
+/* Setup instruction text */
+.setup-instruction {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-3);
+  line-height: 1.5;
+}
+.setup-instruction code {
+  background: var(--bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11.5px;
+  font-family: var(--mono);
+  color: var(--text-2);
+  border: 1px solid var(--border);
+}
+
+/* Tools chips in details */
+.tools-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.tool-chip {
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent-hover);
+  background: var(--accent-soft);
+  font-family: var(--mono);
+}
+
+/* Config grid */
+.config-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 16px;
+  font-size: 13px;
+}
+.config-label { color: var(--text-3); }
+.config-value { color: var(--text-1); font-weight: 500; }
+
+/* Stop button in details */
+.stop-section {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--green-soft);
+  border: 1px solid var(--green-border);
+  margin-bottom: 16px;
+}
+.stop-section-text {
+  font-size: 13px;
+  color: #15803d;
+  font-weight: 500;
+}
+
+/* ─── Metrics Dashboard ─────────────────────────────────────────── */
+.metrics-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 16px;
+  margin-bottom: 28px;
+}
+.metric-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  transition: box-shadow var(--dur) ease;
+}
+.metric-card:hover { box-shadow: var(--shadow); }
+.metric-label {
+  font-size: 11px;
+  font-weight: 620;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+  margin-bottom: 6px;
+}
+.metric-value {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--text-1);
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+.metric-sub {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.metric-value.green { color: var(--green); }
+.metric-value.red { color: var(--red); }
+.metric-value.accent { color: var(--accent); }
+
+/* Agent metrics table */
+.metrics-section {
+  margin-bottom: 32px;
+}
+.metrics-section-title {
+  font-size: 15px;
+  font-weight: 620;
+  color: var(--text-1);
+  margin-bottom: 16px;
+  letter-spacing: -0.01em;
+}
+
+.metrics-table-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.metrics-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.metrics-table th {
+  text-align: left;
+  padding: 10px 16px;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.metrics-table td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-1);
+  font-variant-numeric: tabular-nums;
+}
+.metrics-table tr:last-child td { border-bottom: none; }
+.metrics-table tr:hover td { background: var(--bg); }
+.metrics-table .mono {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.metrics-table .text-muted { color: var(--text-3); }
+
+/* Per-agent detail cards in metrics */
+.agent-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  gap: 16px;
+}
+.agent-metric-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px 24px;
+}
+.agent-metric-card:hover { box-shadow: var(--shadow); }
+.agent-metric-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.agent-metric-name {
+  font-size: 15px;
+  font-weight: 620;
+  color: var(--text-1);
+  letter-spacing: -0.01em;
+}
+.agent-metric-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+.agent-metric-item {}
+.agent-metric-item-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-3);
+  margin-bottom: 2px;
+}
+.agent-metric-item-value {
+  font-size: 18px;
+  font-weight: 650;
+  color: var(--text-1);
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.agent-metric-item-value.sm {
+  font-size: 14px;
+  font-weight: 550;
+}
+
+/* Latency bar chart */
+.latency-bar-group {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.latency-bar-title {
+  font-size: 11px;
+  font-weight: 620;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+  margin-bottom: 12px;
+}
+.latency-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.latency-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.latency-label {
+  width: 36px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+  text-align: right;
+  flex-shrink: 0;
+}
+.latency-track {
+  flex: 1;
+  height: 20px;
+  background: var(--bg);
+  border-radius: 4px;
+  overflow: hidden;
+  position: relative;
+}
+.latency-fill {
+  height: 100%;
+  border-radius: 4px;
+  background: var(--accent);
+  transition: width 400ms ease;
+  min-width: 2px;
+}
+.latency-fill.p95 { background: var(--amber); }
+.latency-fill.p99 { background: var(--red); opacity: 0.8; }
+.latency-val {
+  width: 60px;
+  font-size: 12px;
+  font-family: var(--mono);
+  color: var(--text-2);
+  flex-shrink: 0;
+}
+
+/* Empty metrics */
+.metrics-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 24px;
+  text-align: center;
+  gap: 12px;
+}
+.metrics-empty svg { color: var(--text-3); }
+.metrics-empty h3 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.metrics-empty p {
+  font-size: 13px;
+  color: var(--text-3);
+  max-width: 320px;
+}
+
+/* ─── Loading & Empty States ────────────────────────────────────── */
+.state-message {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 100px 24px;
+  text-align: center;
+  gap: 16px;
+}
+.state-message svg { color: var(--text-3); }
+.state-message h2 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.state-message p {
+  font-size: 14px;
+  color: var(--text-3);
+  max-width: 360px;
+}
+.spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+/* ─── Toast Notifications ───────────────────────────────────────── */
+.toast-container {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 999;
+}
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: var(--shadow-md);
+  animation: toastIn 250ms ease;
+  max-width: 380px;
+}
+.toast.leaving { animation: toastOut 200ms ease forwards; }
+.toast-success {
+  background: var(--green-soft);
+  color: #15803d;
+  border: 1px solid var(--green-border);
+}
+.toast-error {
+  background: var(--red-soft);
+  color: #991b1b;
+  border: 1px solid var(--red-border);
+}
+.toast-info {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+  border: 1px solid var(--accent-border);
+}
+
+/* ─── Footer ────────────────────────────────────────────────────── */
+footer {
+  text-align: center;
+  padding: 24px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+/* ─── Animations ────────────────────────────────────────────────── */
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(12px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes toastOut {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(8px) scale(0.96); }
+}
+
+/* ─── Toggle Switch ────────────────────────────────────────────── */
+.toggle-switch {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.toggle-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.toggle-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--border);
+  border-radius: 20px;
+  cursor: pointer;
+  transition: background var(--dur) ease;
+}
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: white;
+  top: 2px;
+  left: 2px;
+  transition: transform var(--dur) ease;
+  box-shadow: var(--shadow-sm);
+}
+.toggle-switch input:checked + .toggle-slider { background: var(--accent); }
+.toggle-switch input:checked + .toggle-slider::before { transform: translateX(16px); }
+
+/* ─── Modal / Drawer ───────────────────────────────────────────── */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.3);
+  z-index: 200;
+  display: flex;
+  justify-content: flex-end;
+}
+.modal-panel {
+  width: min(640px, 90vw);
+  height: 100%;
+  background: var(--surface);
+  box-shadow: -8px 0 24px rgba(0,0,0,0.12);
+  display: flex;
+  flex-direction: column;
+  animation: slideIn 200ms ease;
+}
+@keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-title { font-size: 15px; font-weight: 620; }
+.modal-body {
+  flex: 1;
+  overflow: auto;
+  padding: 16px 20px;
+  font-size: 12px;
+  font-family: var(--mono);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  color: var(--text-2);
+}
+
+/* ─── Outputs & Audit Tables ───────────────────────────────────── */
+.content-table-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 20px;
+}
+.content-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.content-table th {
+  text-align: left;
+  padding: 10px 16px;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-3);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.content-table td {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-1);
+}
+.content-table tr:last-child td { border-bottom: none; }
+.content-table tr:hover td { background: var(--bg); }
+.content-table .mono { font-family: var(--mono); font-size: 12px; }
+.content-table .text-muted { color: var(--text-3); }
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.section-title {
+  font-size: 15px;
+  font-weight: 620;
+  color: var(--text-1);
+  letter-spacing: -0.01em;
+}
+.pagination {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+/* ─── SVG Charts ───────────────────────────────────────────────── */
+.chart-container {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px 24px;
+  margin-bottom: 20px;
+}
+.chart-title {
+  font-size: 13px;
+  font-weight: 620;
+  color: var(--text-1);
+  margin-bottom: 14px;
+}
+.chart-svg { width: 100%; height: 180px; }
+.chart-legend {
+  display: flex;
+  gap: 16px;
+  margin-top: 10px;
+  font-size: 11px;
+  color: var(--text-2);
+}
+.chart-legend-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+/* ─── Responsive ────────────────────────────────────────────────── */
+@media (max-width: 520px) {
+  .header-inner { padding: 0 16px; }
+  main { padding: 16px; }
+  .agents-grid, .agent-metrics-grid { grid-template-columns: 1fr; }
+  .metrics-summary { grid-template-columns: 1fr 1fr; }
+  .card-body { padding: 18px; }
+  .card-details-inner { padding: 0 18px 18px; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <div class="header-top">
+      <div class="brand">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l9 4.5v5.5c0 5.25-3.75 10-9 11.25C6.75 22 3 17.25 3 12V6.5L12 2z"/><path d="M9 12l2 2 4-4" stroke-width="2.5"/></svg>
+        <span>Secure Agents</span>
+      </div>
+      <div class="header-actions" id="header-actions">
+        <span id="selection-info" class="selection-info" style="display:none"></span>
+        <button id="run-btn" class="btn btn-primary" disabled>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z"/></svg>
+          Run Selected
+        </button>
+        <button id="stop-all-btn" class="btn btn-danger" style="display:none">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          Stop All
+        </button>
+      </div>
+    </div>
+    <div class="tabs">
+      <button class="tab active" data-tab="agents" onclick="switchTab('agents')">Agents</button>
+      <button class="tab" data-tab="metrics" onclick="switchTab('metrics')">Metrics</button>
+      <button class="tab" data-tab="outputs" onclick="switchTab('outputs')">Outputs</button>
+      <button class="tab" data-tab="audit" onclick="switchTab('audit')">Audit Log</button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <!-- ════════ Agents Tab ════════ -->
+  <div id="tab-agents" class="tab-content active">
+    <div id="loading-state" class="state-message">
+      <div class="spinner"></div>
+      <p>Loading agents&hellip;</p>
+    </div>
+
+    <div id="empty-state" class="state-message" style="display:none">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M12 8v4m0 4h.01"/></svg>
+      <h2>No agents found</h2>
+      <p>Register agents in your project to see them here. See the docs for how to add a new agent.</p>
+    </div>
+
+    <div id="error-state" class="state-message" style="display:none">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--red)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>
+      <h2>Connection error</h2>
+      <p>Could not reach the server. Make sure it is running.</p>
+      <button class="btn btn-outline" onclick="fetchAgents()">Retry</button>
+    </div>
+
+    <div id="agents-grid" class="agents-grid" style="display:none"></div>
+  </div>
+
+  <!-- ════════ Metrics Tab ════════ -->
+  <div id="tab-metrics" class="tab-content">
+    <div id="metrics-content"></div>
+  </div>
+
+  <!-- ════════ Outputs Tab ════════ -->
+  <div id="tab-outputs" class="tab-content">
+    <div id="outputs-content"></div>
+  </div>
+
+  <!-- ════════ Audit Log Tab ════════ -->
+  <div id="tab-audit" class="tab-content">
+    <div id="audit-content"></div>
+  </div>
+</main>
+
+<!-- ── Slide-out modal for logs/outputs/file view ── -->
+<div id="modal-overlay" class="modal-overlay" style="display:none" onclick="closeModal()">
+  <div class="modal-panel" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span id="modal-title" class="modal-title"></span>
+      <button class="btn btn-ghost" onclick="closeModal()">&times;</button>
+    </div>
+    <pre id="modal-body" class="modal-body"></pre>
+  </div>
+</div>
+
+<footer>Secure Agents v0.2.0 &mdash; All data stays on your machine</footer>
+
+<div id="toasts" class="toast-container"></div>
+
+<script>
+// ─── State ─────────────────────────────────────────────────────────
+const state = {
+  agents: [],
+  selected: new Set(),
+  expanded: new Set(),
+  loading: true,
+  error: false,
+  activeTab: 'agents',
+  metrics: null,
+  metricsHistory: null,
+  metricsHourly: null,
+  outputs: null,
+  auditLog: null,
+  auditOffset: 0,
+  auditLimit: 50,
+};
+
+// ─── Icons (inline SVGs) ──────────────────────────────────────────
+function iconSvg(name, size = 16) {
+  const p = {
+    check: '<path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><path d="M22 4L12 14.01l-3-3"/>',
+    x: '<circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/>',
+    alert: '<path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+    chevron: '<path d="M6 9l6 6 6-6"/>',
+    wrench: '<path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/>',
+    cpu: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/>',
+    key: '<path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.78 7.77 5.5 5.5 0 017.77-7.77zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>',
+    terminal: '<path d="M4 17l6-5-6-5"/><path d="M12 19h8"/>',
+  };
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${p[name]||''}</svg>`;
+}
+
+// ─── Formatting ───────────────────────────────────────────────────
+function formatName(name) {
+  const acronyms = new Set(['nda','api','llm','pdf','csv','sql','ai','ui','smtp','imap']);
+  return name.split('_').map(w => acronyms.has(w) ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
+
+function formatUptime(seconds) {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.floor(seconds/60)}m ${Math.round(seconds%60)}s`;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return `${h}h ${m}m`;
+}
+
+function formatNumber(n) {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
+  return String(n);
+}
+
+function formatMs(ms) {
+  if (ms == null) return '--';
+  if (ms < 1) return '<1ms';
+  if (ms < 1000) return Math.round(ms) + 'ms';
+  return (ms / 1000).toFixed(2) + 's';
+}
+
+// ─── Tab Switching ────────────────────────────────────────────────
+function switchTab(tab) {
+  state.activeTab = tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === `tab-${tab}`));
+
+  const headerActions = document.getElementById('header-actions');
+  headerActions.style.display = tab === 'agents' ? '' : 'none';
+
+  if (tab === 'metrics') fetchMetrics();
+  if (tab === 'outputs') fetchOutputs();
+  if (tab === 'audit') fetchAuditLog();
+}
+
+// ─── API ──────────────────────────────────────────────────────────
+async function fetchAgents() {
+  try {
+    const res = await fetch('/api/agents');
+    if (!res.ok) throw new Error(res.statusText);
+    const data = await res.json();
+    state.agents = data.agents || [];
+    state.loading = false;
+    state.error = false;
+    if (state.activeTab === 'agents') renderAgents();
+  } catch (e) {
+    if (state.loading) {
+      state.loading = false;
+      state.error = true;
+      if (state.activeTab === 'agents') renderAgents();
+    }
+  }
+}
+
+async function fetchMetrics() {
+  try {
+    const [metricsRes, historyRes, hourlyRes] = await Promise.all([
+      fetch('/api/metrics'),
+      fetch('/api/metrics/history?range=24').catch(() => null),
+      fetch('/api/metrics/hourly?range=168').catch(() => null),
+    ]);
+    if (!metricsRes.ok) throw new Error(metricsRes.statusText);
+    state.metrics = await metricsRes.json();
+    state.metricsHistory = historyRes && historyRes.ok ? await historyRes.json() : null;
+    state.metricsHourly = hourlyRes && hourlyRes.ok ? await hourlyRes.json() : null;
+    renderMetrics();
+  } catch (e) {
+    state.metrics = null;
+    renderMetrics();
+  }
+}
+
+async function startAgents(names) {
+  try {
+    const res = await fetch('/api/agents/start', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({agents: names}),
+    });
+    const data = await res.json();
+    if (data.started && data.started.length) {
+      toast(`Started: ${data.started.map(formatName).join(', ')}`, 'success');
+    }
+    if (data.errors && data.errors.length) {
+      data.errors.forEach(e => toast(`${formatName(e.agent)}: ${e.error}`, 'error'));
+    }
+    state.selected.clear();
+    await fetchAgents();
+  } catch (e) {
+    toast('Failed to start agents', 'error');
+  }
+}
+
+async function stopAgent(name) {
+  try {
+    await fetch(`/api/agents/${name}/stop`, {method: 'POST'});
+    toast(`Stopped ${formatName(name)}`, 'success');
+    await fetchAgents();
+  } catch (e) {
+    toast(`Failed to stop ${formatName(name)}`, 'error');
+  }
+}
+
+async function stopAllAgents() {
+  try {
+    const res = await fetch('/api/agents/stop-all', {method: 'POST'});
+    const data = await res.json();
+    if (data.stopped && data.stopped.length) {
+      toast(`Stopped ${data.stopped.length} agent(s)`, 'success');
+    }
+    await fetchAgents();
+  } catch (e) {
+    toast('Failed to stop agents', 'error');
+  }
+}
+
+async function saveCredential(key, inputEl) {
+  const value = inputEl.value.trim();
+  if (!value) { inputEl.focus(); return; }
+  const btn = inputEl.nextElementSibling;
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+  try {
+    const res = await fetch('/api/credentials', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({key, value}),
+    });
+    if (!res.ok) throw new Error();
+    toast(`Credential saved`, 'success');
+    inputEl.value = '';
+    await fetchAgents();
+    // Auto-test email connection after saving email password
+    if (key === 'email_password') {
+      toast('Testing email connection...', 'info');
+      try {
+        const testRes = await fetch('/api/test-email', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({}),
+        });
+        const testData = await testRes.json();
+        if (testData.success) {
+          toast(`Email connected: ${testData.detail}`, 'success');
+        } else {
+          toast(`Email test failed: ${testData.error}`, 'error');
+        }
+      } catch (e) { /* silent */ }
+    }
+  } catch (e) {
+    toast('Failed to save credential', 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save';
+  }
+}
+
+async function saveConfigValue(keyPath, value) {
+  try {
+    const res = await fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({key_path: keyPath, value}),
+    });
+    if (!res.ok) throw new Error();
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function switchProvider(providerName) {
+  try {
+    const res = await fetch('/api/provider', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({provider: providerName}),
+    });
+    if (!res.ok) throw new Error();
+    toast(`Switched to ${providerName}`, 'success');
+    await fetchAgents();
+  } catch (e) {
+    toast('Failed to switch provider', 'error');
+  }
+}
+
+async function saveEmailConfig(inputEl) {
+  const email = inputEl.value.trim();
+  if (!email) { inputEl.focus(); return; }
+  const btn = inputEl.nextElementSibling;
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+  try {
+    // Save to both imap and smtp username
+    const r1 = await saveConfigValue('defaults.email.imap.username', email);
+    const r2 = await saveConfigValue('defaults.email.smtp.username', email);
+    if (!r1 || !r2) throw new Error();
+    toast(`Email set to ${email}`, 'success');
+    await fetchAgents();
+  } catch (e) {
+    toast('Failed to save email config', 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save';
+  }
+}
+
+async function testEmailConnection(agentName, btn) {
+  const resultEl = document.getElementById(`test-email-result-${agentName}`);
+  btn.disabled = true;
+  btn.textContent = 'Testing...';
+  resultEl.innerHTML = '';
+  try {
+    const res = await fetch('/api/test-email', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({}),
+    });
+    const data = await res.json();
+    if (data.success) {
+      resultEl.innerHTML = `<span style="color:var(--green);font-weight:530">${iconSvg('check', 14)} ${esc(data.detail)}</span>`;
+      toast('Email connection successful!', 'success');
+    } else {
+      resultEl.innerHTML = `<span style="color:var(--red);font-weight:530">${esc(data.error)}</span>`;
+      toast('Email connection failed', 'error');
+    }
+  } catch (e) {
+    resultEl.innerHTML = `<span style="color:var(--red)">Connection test failed</span>`;
+    toast('Failed to test email connection', 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Test Email Connection';
+  }
+}
+
+async function saveAuthMethod(method) {
+  try {
+    const r1 = await saveConfigValue('defaults.email.imap.auth_method', method);
+    const r2 = await saveConfigValue('defaults.email.smtp.auth_method', method);
+    if (!r1 || !r2) throw new Error();
+    toast(`Auth method set to ${method}`, 'success');
+    await fetchAgents();
+  } catch (e) {
+    toast('Failed to save auth method', 'error');
+  }
+}
+
+// ─── Rendering: Agents Tab ───────────────────────────────────────
+function renderAgents() {
+  const loadingEl = document.getElementById('loading-state');
+  const emptyEl = document.getElementById('empty-state');
+  const errorEl = document.getElementById('error-state');
+  const gridEl = document.getElementById('agents-grid');
+  const runBtn = document.getElementById('run-btn');
+  const stopAllBtn = document.getElementById('stop-all-btn');
+  const selInfo = document.getElementById('selection-info');
+
+  // Skip re-render if user is interacting with any form element, or has typed into an input
+  const active = document.activeElement;
+  if (active && (active.tagName === 'INPUT' || active.tagName === 'SELECT')) return;
+  const dirtyInputs = gridEl.querySelectorAll('input:not([type="checkbox"])');
+  for (const inp of dirtyInputs) { if (inp.value.trim()) return; }
+
+  loadingEl.style.display = state.loading ? '' : 'none';
+  errorEl.style.display = (!state.loading && state.error) ? '' : 'none';
+  emptyEl.style.display = (!state.loading && !state.error && state.agents.length === 0) ? '' : 'none';
+  gridEl.style.display = (!state.loading && !state.error && state.agents.length > 0) ? '' : 'none';
+
+  if (state.loading || state.error || state.agents.length === 0) return;
+
+  gridEl.innerHTML = state.agents.map(renderCard).join('');
+
+  const runningCount = state.agents.filter(a => a.running).length;
+  const selectedCount = state.selected.size;
+
+  if (selectedCount > 0) {
+    selInfo.style.display = '';
+    selInfo.textContent = `${selectedCount} selected`;
+    runBtn.disabled = false;
+    runBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z"/></svg> Run ${selectedCount > 1 ? selectedCount + ' Agents' : 'Agent'}`;
+  } else {
+    selInfo.style.display = 'none';
+    runBtn.disabled = true;
+    runBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M8 5v14l11-7z"/></svg> Run Selected`;
+  }
+
+  stopAllBtn.style.display = runningCount > 0 ? '' : 'none';
+}
+
+function renderCard(agent) {
+  const isSelected = state.selected.has(agent.name);
+  const isExpanded = state.expanded.has(agent.name);
+  const isRunning = agent.running;
+  const isHealthy = agent.health && agent.health.healthy;
+
+  let cardClass = 'agent-card';
+  if (isRunning) cardClass += ' running';
+  else if (isSelected) cardClass += ' selected';
+
+  let badge;
+  if (isRunning) {
+    badge = `<span class="status-badge badge-running"><span class="status-dot"></span>Running</span>`;
+  } else if (isHealthy) {
+    badge = `<span class="status-badge badge-ready"><span class="status-dot"></span>Ready</span>`;
+  } else {
+    badge = `<span class="status-badge badge-setup"><span class="status-dot"></span>Setup Required</span>`;
+  }
+
+  const features = (agent.features || []).slice(0, 6);
+  const featuresHtml = features.length > 0
+    ? `<ul class="features-list">${features.map(f => `<li>${esc(f)}</li>`).join('')}</ul>`
+    : '';
+
+  const providerChip = `<span class="chip">${iconSvg('cpu', 13)} ${esc(agent.provider)}</span>`;
+  const toolsChip = `<span class="chip">${iconSvg('wrench', 13)} ${agent.tools.length} tool${agent.tools.length !== 1 ? 's' : ''}</span>`;
+  const versionChip = `<span class="chip">v${esc(agent.version || '0.1.0')}</span>`;
+  const toggleClass = isExpanded ? 'btn btn-ghost open' : 'btn btn-ghost';
+  const toggleBtn = `<button class="${toggleClass}" onclick="toggleDetails('${agent.name}')">${isExpanded ? 'Less' : 'Details'} ${iconSvg('chevron', 14)}</button>`;
+  const detailsClass = isExpanded ? 'card-details-wrapper open' : 'card-details-wrapper';
+
+  // Run stats
+  const lastRunStr = agent.last_run_at
+    ? `Last run: ${new Date(agent.last_run_at * 1000).toLocaleTimeString()}`
+    : 'Never run';
+  const runCountStr = `${agent.run_count_today || 0} today / ${agent.run_count_total || 0} total`;
+
+  // Enable/disable toggle
+  const enabledToggle = `<label class="toggle-switch" title="${agent.enabled ? 'Enabled' : 'Disabled'}">
+    <input type="checkbox" ${agent.enabled ? 'checked' : ''} onchange="toggleAgentEnabled('${agent.name}')">
+    <span class="toggle-slider"></span>
+  </label>`;
+
+  return `
+    <div class="${cardClass}" data-agent="${agent.name}">
+      <div class="card-body">
+        <div class="card-header">
+          <input type="checkbox" class="card-checkbox"
+            ${isSelected ? 'checked' : ''}
+            ${isRunning ? 'disabled' : ''}
+            onchange="toggleSelect('${agent.name}')">
+          <div class="card-title-area">
+            <div class="card-name">${esc(formatName(agent.name))} ${versionChip}</div>
+          </div>
+          ${enabledToggle}
+          ${badge}
+        </div>
+        <div class="card-description">${esc(agent.description)}</div>
+        ${featuresHtml}
+        <div style="margin-top:12px;font-size:12px;color:var(--text-3);display:flex;gap:16px;align-items:center">
+          <span>${lastRunStr}</span>
+          <span>Runs: ${runCountStr}</span>
+        </div>
+        <div class="card-meta">
+          ${providerChip}
+          ${toolsChip}
+          <span class="meta-spacer"></span>
+          <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();viewLogs('${agent.name}')" title="View logs">
+            ${iconSvg('terminal', 14)} Logs
+          </button>
+          <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();viewOutputs('${agent.name}')" title="View outputs">
+            ${iconSvg('wrench', 14)} Outputs
+          </button>
+          ${toggleBtn}
+        </div>
+      </div>
+      <div class="${detailsClass}">
+        <div class="card-details">
+          <div class="card-details-inner">
+            <div class="details-divider"></div>
+            ${renderDetails(agent)}
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderDetails(agent) {
+  const checks = (agent.health && agent.health.checks) || [];
+  const failingChecks = checks.filter(c => c.status !== 'ok');
+  const isRunning = agent.running;
+  let html = '';
+
+  if (isRunning) {
+    html += `
+      <div class="stop-section">
+        <span class="stop-section-text">Agent is running</span>
+        <button class="btn btn-danger btn-sm" onclick="stopAgent('${agent.name}')">Stop Agent</button>
+      </div>`;
+  }
+
+  if (!isRunning && failingChecks.length > 0) {
+    html += `
+      <div class="setup-banner">
+        ${iconSvg('alert', 16)}
+        <span>Complete the setup below to get this agent ready</span>
+      </div>`;
+    for (const check of failingChecks) {
+      html += renderSetupAction(check, agent);
+    }
+  }
+
+  // Show "Test Connection" button if email is configured (has ok email/oauth checks)
+  const hasEmailTools = (agent.tools || []).some(t => t.includes('email'));
+  const emailCredsOk = checks.some(c => c.status === 'ok' && (c.name.includes('Email') || c.name.includes('OAuth') || c.name.includes('email')));
+  if (hasEmailTools && emailCredsOk && !isRunning) {
+    html += `
+      <div style="margin-bottom:16px">
+        <button class="btn btn-outline btn-sm" id="test-email-btn-${agent.name}"
+                onclick="testEmailConnection('${agent.name}', this)">
+          ${iconSvg('terminal', 14)} Test Email Connection
+        </button>
+        <span id="test-email-result-${agent.name}" style="margin-left:10px;font-size:13px"></span>
+      </div>`;
+  }
+
+  html += `<div class="detail-section"><div class="detail-section-title">Health Checks</div>`;
+  for (const check of checks) {
+    const iconClass = check.status === 'ok' ? 'ok' : 'error';
+    const iconName = check.status === 'ok' ? 'check' : 'x';
+    html += `
+      <div class="check-item">
+        <span class="check-icon ${iconClass}">${iconSvg(iconName, 18)}</span>
+        <div class="check-info">
+          <div class="check-name">${esc(check.name)}</div>
+          <div class="check-detail">${esc(check.detail)}</div>
+        </div>
+      </div>`;
+  }
+  if (checks.length === 0) {
+    html += `<div style="font-size:13px;color:var(--text-3)">No health checks available</div>`;
+  }
+  html += `</div>`;
+
+  if (agent.tools && agent.tools.length > 0) {
+    html += `
+      <div class="detail-section">
+        <div class="detail-section-title">Tools</div>
+        <div class="tools-grid">
+          ${agent.tools.map(t => `<span class="tool-chip">${esc(t)}</span>`).join('')}
+        </div>
+      </div>`;
+  }
+
+  html += `
+    <div class="detail-section">
+      <div class="detail-section-title">Configuration</div>
+      <div class="config-grid">
+        <span class="config-label">Provider</span>
+        <span class="config-value">${esc(agent.provider)}</span>
+        <span class="config-label">Poll Interval</span>
+        <span class="config-value">${agent.poll_interval}s</span>
+        <span class="config-label">Configured</span>
+        <span class="config-value">${agent.configured ? 'Yes' : 'No'}</span>
+      </div>
+    </div>`;
+
+  return html;
+}
+
+function renderSetupAction(check, agent) {
+  if (!check.setup_action) {
+    return `<div class="check-item">
+      <span class="check-icon error">${iconSvg('x', 18)}</span>
+      <div class="check-info">
+        <div class="check-name">${esc(check.name)}</div>
+        <div class="check-detail">${esc(check.detail)}</div>
+      </div>
+    </div>`;
+  }
+
+  let actionHtml = '';
+  const key = check.setup_key || '';
+  const uid = `${agent.name}-${check.setup_action}-${key}`.replace(/[^a-z0-9]/gi, '-');
+
+  switch (check.setup_action) {
+    case 'credential':
+      actionHtml = `
+        <div class="setup-action">
+          <input type="password" class="input" placeholder="Enter ${esc(check.name.toLowerCase())}"
+                 id="cred-${esc(uid)}"
+                 onkeydown="if(event.key==='Enter')saveCredential('${esc(key)}',this)">
+          <button class="btn btn-primary btn-sm"
+                  onclick="saveCredential('${esc(key)}',document.getElementById('cred-${esc(uid)}'))">Save</button>
+        </div>`;
+      break;
+
+    case 'oauth2':
+      actionHtml = `
+        <div class="setup-instruction">
+          OAuth2 requires a one-time browser authorization. Run this in your terminal:<br>
+          <code>secure-agents auth gmail client_secrets.json</code>
+        </div>`;
+      break;
+
+    case 'ollama_install': {
+      // Show option to either install Ollama or switch to a cloud provider
+      const providerOptions = (agent.available_providers || [])
+        .filter(p => p !== 'ollama')
+        .map(p => `<option value="${esc(p)}">${esc(p.charAt(0).toUpperCase() + p.slice(1))}</option>`)
+        .join('');
+      actionHtml = `
+        <div class="setup-instruction" style="margin-bottom:10px">
+          Install Ollama for free local AI (no API key needed):<br>
+          <code>brew install ollama && ollama pull llama3.2 && brew services start ollama</code>
+          <div style="margin-top:4px;font-size:11px;color:var(--text-3)">This runs Ollama as a background service &mdash; no terminal needed.</div>
+        </div>
+        ${providerOptions ? `
+        <div class="setup-instruction" style="margin-bottom:6px">Or switch to a cloud provider instead:</div>
+        <div class="setup-action">
+          <select class="input" id="provider-${esc(uid)}" style="flex:0 0 auto;width:160px">
+            ${providerOptions}
+          </select>
+          <button class="btn btn-primary btn-sm"
+                  onclick="switchProvider(document.getElementById('provider-${esc(uid)}').value)">Switch Provider</button>
+        </div>` : ''}`;
+      break;
+    }
+
+    case 'ollama': {
+      const providerOptions = (agent.available_providers || [])
+        .filter(p => p !== 'ollama')
+        .map(p => `<option value="${esc(p)}">${esc(p.charAt(0).toUpperCase() + p.slice(1))}</option>`)
+        .join('');
+      actionHtml = `
+        <div class="setup-instruction" style="margin-bottom:10px">
+          Ollama is installed but not responding. Start it as a background service:<br>
+          <code>brew services start ollama</code>
+          <div style="margin-top:4px;font-size:11px;color:var(--text-3)">This runs Ollama in the background. No need to keep a terminal open.</div>
+        </div>
+        ${providerOptions ? `
+        <div class="setup-instruction" style="margin-bottom:6px">Or switch to a cloud provider:</div>
+        <div class="setup-action">
+          <select class="input" id="provider-${esc(uid)}" style="flex:0 0 auto;width:160px">
+            ${providerOptions}
+          </select>
+          <button class="btn btn-primary btn-sm"
+                  onclick="switchProvider(document.getElementById('provider-${esc(uid)}').value)">Switch Provider</button>
+        </div>` : ''}`;
+      break;
+    }
+
+    case 'provider': {
+      // Cloud provider not reachable - likely needs API key or is wrong provider
+      const providerOptions = (agent.available_providers || [])
+        .map(p => `<option value="${esc(p)}" ${p === agent.provider ? 'selected' : ''}>${esc(p.charAt(0).toUpperCase() + p.slice(1))}</option>`)
+        .join('');
+      actionHtml = `
+        <div class="setup-instruction" style="margin-bottom:6px">Switch to a different provider:</div>
+        <div class="setup-action">
+          <select class="input" id="provider-${esc(uid)}" style="flex:0 0 auto;width:160px">
+            ${providerOptions}
+          </select>
+          <button class="btn btn-primary btn-sm"
+                  onclick="switchProvider(document.getElementById('provider-${esc(uid)}').value)">Switch Provider</button>
+        </div>`;
+      break;
+    }
+
+    case 'email_config':
+      actionHtml = `
+        <div class="setup-action">
+          <input type="email" class="input" placeholder="you@gmail.com"
+                 id="email-${esc(uid)}"
+                 value="${esc(agent.email_username || '')}"
+                 onkeydown="if(event.key==='Enter')saveEmailConfig(this)">
+          <button class="btn btn-primary btn-sm"
+                  onclick="saveEmailConfig(document.getElementById('email-${esc(uid)}'))">Save</button>
+        </div>
+        <div class="setup-instruction" style="margin-top:8px">
+          Auth method:
+          <select class="input" id="auth-${esc(uid)}" style="width:auto;display:inline;padding:3px 8px;margin-left:4px"
+                  onchange="saveAuthMethod(this.value)">
+            <option value="app_password" ${agent.email_auth_method === 'app_password' ? 'selected' : ''}>App Password</option>
+            <option value="oauth2" ${agent.email_auth_method === 'oauth2' ? 'selected' : ''}>Gmail OAuth2</option>
+          </select>
+        </div>
+        <div class="setup-instruction" style="margin-top:6px;font-size:11px;color:var(--text-3)">
+          ${agent.email_auth_method === 'oauth2'
+            ? 'OAuth2: run <code>secure-agents auth gmail client_secrets.json</code> in your terminal to authorize.'
+            : 'App Password: enable 2FA on your Google account, then create an App Password at <code>myaccount.google.com/apppasswords</code>'}
+        </div>`;
+      break;
+  }
+
+  return `
+    <div style="margin-bottom:12px">
+      <div class="check-item" style="border:none;padding-bottom:0">
+        <span class="check-icon error">${iconSvg('x', 18)}</span>
+        <div class="check-info">
+          <div class="check-name">${esc(check.name)}</div>
+          <div class="check-detail">${esc(check.detail)}</div>
+          ${actionHtml}
+        </div>
+      </div>
+    </div>`;
+}
+
+// ─── Rendering: Metrics Tab ──────────────────────────────────────
+function renderMetrics() {
+  const container = document.getElementById('metrics-content');
+  const m = state.metrics;
+
+  if (!m || m.total_agents_tracked === 0) {
+    container.innerHTML = `
+      <div class="metrics-empty">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/>
+        </svg>
+        <h3>No metrics yet</h3>
+        <p>Start an agent from the Agents tab to begin collecting performance data.</p>
+      </div>`;
+    return;
+  }
+
+  const agentNames = Object.keys(m.agents);
+  const runningCount = agentNames.filter(n => m.agents[n].running).length;
+  const overallErrorRate = m.total_ticks > 0 ? (m.total_errors / m.total_ticks * 100) : 0;
+
+  // Summary cards + export button
+  let html = `
+    <div class="section-header" style="margin-bottom:20px">
+      <div class="section-title">Metrics Dashboard</div>
+      <button class="btn btn-outline btn-sm" onclick="exportMetricsCsv()">
+        Export CSV
+      </button>
+    </div>
+    <div class="metrics-summary">`;
+  html += metricCard('Server Uptime', formatUptime(m.server_uptime_s), null);
+  html += metricCard('Agents Tracked', String(m.total_agents_tracked), `${runningCount} currently running`, runningCount > 0 ? 'green' : null);
+  html += metricCard('Total Ticks', formatNumber(m.total_ticks), 'Across all agents');
+  html += metricCard('Total Errors', formatNumber(m.total_errors), m.total_ticks > 0 ? `${overallErrorRate.toFixed(1)}% error rate` : null, m.total_errors > 0 ? 'red' : 'green');
+
+  // Find best/worst latency for summary
+  let bestLatency = null, worstLatency = null, bestAgent = '', worstAgent = '';
+  for (const name of agentNames) {
+    const lat = m.agents[name].latency;
+    if (!lat) continue;
+    if (bestLatency === null || lat.p50_ms < bestLatency) { bestLatency = lat.p50_ms; bestAgent = name; }
+    if (worstLatency === null || lat.p95_ms > worstLatency) { worstLatency = lat.p95_ms; worstAgent = name; }
+  }
+  if (bestLatency !== null) {
+    html += metricCard('Best p50 Latency', formatMs(bestLatency), formatName(bestAgent), 'accent');
+  }
+  if (worstLatency !== null) {
+    html += metricCard('Worst p95 Latency', formatMs(worstLatency), formatName(worstAgent), worstLatency > 5000 ? 'red' : null);
+  }
+  html += `</div>`;
+
+  // Per-agent overview table
+  html += `
+    <div class="metrics-section">
+      <div class="metrics-section-title">Agent Overview</div>
+      <div class="metrics-table-wrap">
+        <table class="metrics-table">
+          <thead>
+            <tr>
+              <th>Agent</th>
+              <th>Status</th>
+              <th>Uptime</th>
+              <th>Ticks</th>
+              <th>Errors</th>
+              <th>Error Rate</th>
+              <th>p50</th>
+              <th>p95</th>
+            </tr>
+          </thead>
+          <tbody>`;
+
+  for (const name of agentNames) {
+    const a = m.agents[name];
+    const statusBadge = a.running
+      ? `<span class="status-badge badge-running" style="font-size:11px;padding:2px 8px"><span class="status-dot"></span>Running</span>`
+      : `<span class="status-badge badge-ready" style="font-size:11px;padding:2px 8px;background:var(--bg);color:var(--text-3)"><span class="status-dot" style="background:var(--text-3)"></span>Stopped</span>`;
+
+    const errorRateClass = a.error_rate_pct > 5 ? ' style="color:var(--red);font-weight:600"' : (a.error_rate_pct === 0 ? ' class="text-muted"' : '');
+
+    html += `
+      <tr>
+        <td style="font-weight:550">${esc(formatName(name))}</td>
+        <td>${statusBadge}</td>
+        <td class="mono">${formatUptime(a.uptime_s)}</td>
+        <td class="mono">${formatNumber(a.ticks)}</td>
+        <td class="mono"${a.errors > 0 ? ' style="color:var(--red)"' : ''}>${formatNumber(a.errors)}</td>
+        <td class="mono"${errorRateClass}>${a.error_rate_pct.toFixed(1)}%</td>
+        <td class="mono">${a.latency ? formatMs(a.latency.p50_ms) : '<span class="text-muted">--</span>'}</td>
+        <td class="mono">${a.latency ? formatMs(a.latency.p95_ms) : '<span class="text-muted">--</span>'}</td>
+      </tr>`;
+  }
+
+  html += `</tbody></table></div></div>`;
+
+  // Per-agent detail cards with latency bars
+  const agentsWithLatency = agentNames.filter(n => m.agents[n].latency);
+  if (agentsWithLatency.length > 0) {
+    html += `
+      <div class="metrics-section">
+        <div class="metrics-section-title">Agent Performance</div>
+        <div class="agent-metrics-grid">`;
+
+    for (const name of agentsWithLatency) {
+      const a = m.agents[name];
+      const lat = a.latency;
+      const maxMs = Math.max(lat.p99_ms, lat.max_ms, 1);
+
+      html += `
+        <div class="agent-metric-card">
+          <div class="agent-metric-header">
+            <span class="agent-metric-name">${esc(formatName(name))}</span>
+            ${a.running
+              ? '<span class="status-badge badge-running" style="font-size:11px;padding:2px 8px"><span class="status-dot"></span>Running</span>'
+              : '<span class="status-badge" style="font-size:11px;padding:2px 8px;background:var(--bg);color:var(--text-3)">Stopped</span>'}
+          </div>
+          <div class="agent-metric-grid">
+            <div class="agent-metric-item">
+              <div class="agent-metric-item-label">Total Ticks</div>
+              <div class="agent-metric-item-value">${formatNumber(a.ticks)}</div>
+            </div>
+            <div class="agent-metric-item">
+              <div class="agent-metric-item-label">Errors</div>
+              <div class="agent-metric-item-value" ${a.errors > 0 ? 'style="color:var(--red)"' : ''}>${formatNumber(a.errors)}</div>
+            </div>
+            <div class="agent-metric-item">
+              <div class="agent-metric-item-label">Uptime</div>
+              <div class="agent-metric-item-value sm">${formatUptime(a.uptime_s)}</div>
+            </div>
+            <div class="agent-metric-item">
+              <div class="agent-metric-item-label">Starts</div>
+              <div class="agent-metric-item-value sm">${a.starts}</div>
+            </div>
+          </div>
+          <div class="latency-bar-group">
+            <div class="latency-bar-title">Latency Distribution</div>
+            <div class="latency-bars">
+              ${latencyRow('min', lat.min_ms, maxMs, '')}
+              ${latencyRow('p50', lat.p50_ms, maxMs, '')}
+              ${latencyRow('mean', lat.mean_ms, maxMs, '')}
+              ${latencyRow('p95', lat.p95_ms, maxMs, 'p95')}
+              ${latencyRow('p99', lat.p99_ms, maxMs, 'p99')}
+              ${latencyRow('max', lat.max_ms, maxMs, 'p99')}
+            </div>
+          </div>
+        </div>`;
+    }
+
+    html += `</div></div>`;
+  }
+
+  // Time-series charts from history data
+  if (state.metricsHourly && state.metricsHourly.data && state.metricsHourly.data.length > 0) {
+    const hourlyData = state.metricsHourly.data;
+    // Aggregate ticks per hour
+    const ticksByHour = {};
+    const errorsByHour = {};
+    for (const d of hourlyData) {
+      const h = d.hour || d.timestamp_hour;
+      if (!h) continue;
+      ticksByHour[h] = (ticksByHour[h] || 0) + (d.ticks || d.count || 0);
+      errorsByHour[h] = (errorsByHour[h] || 0) + (d.errors || 0);
+    }
+    const hours = Object.keys(ticksByHour).sort();
+    if (hours.length > 1) {
+      const tickData = hours.map(h => ({ hour: h, value: ticksByHour[h] }));
+      const errorData = hours.map(h => ({ hour: h, value: errorsByHour[h] || 0 }));
+
+      html += `<div class="metrics-section"><div class="metrics-section-title">Activity Over Time</div>`;
+      html += renderTimeSeriesChart('chart-ticks', tickData, 'Ticks per Hour', 'var(--accent)');
+      if (errorData.some(d => d.value > 0)) {
+        html += renderTimeSeriesChart('chart-errors', errorData, 'Errors per Hour', 'var(--red)');
+      }
+      html += `</div>`;
+    }
+  }
+
+  // Status distribution donut (from queue stats)
+  try {
+    fetch('/api/queue/stats').then(r => r.json()).then(qData => {
+      if (qData.stats && Object.keys(qData.stats).length > 0) {
+        const queueHtml = renderQueueStats(qData);
+        const section = document.createElement('div');
+        section.innerHTML = queueHtml;
+        container.appendChild(section);
+      }
+    }).catch(() => {});
+  } catch (e) {}
+
+  container.innerHTML = html;
+}
+
+function renderQueueStats(qData) {
+  const stats = qData.stats || {};
+  const dlq = qData.dlq_count || 0;
+  const entries = Object.entries(stats);
+  if (entries.length === 0 && dlq === 0) return '';
+
+  let html = `
+    <div class="metrics-section" style="margin-top:24px">
+      <div class="metrics-section-title">Job Queue</div>
+      <div class="metrics-summary">`;
+  for (const [status, count] of entries) {
+    const color = status === 'completed' ? 'green' : status === 'failed' ? 'red' : status === 'processing' ? 'accent' : null;
+    html += metricCard(status.charAt(0).toUpperCase() + status.slice(1), String(count), null, color);
+  }
+  if (dlq > 0) {
+    html += metricCard('Dead Letter Queue', String(dlq), 'Failed permanently', 'red');
+  }
+  html += `</div></div>`;
+  return html;
+}
+
+function metricCard(label, value, sub, colorClass) {
+  return `
+    <div class="metric-card">
+      <div class="metric-label">${esc(label)}</div>
+      <div class="metric-value${colorClass ? ' ' + colorClass : ''}">${value}</div>
+      ${sub ? `<div class="metric-sub">${esc(sub)}</div>` : ''}
+    </div>`;
+}
+
+function latencyRow(label, ms, maxMs, extraClass) {
+  const pct = Math.max((ms / maxMs) * 100, 1);
+  return `
+    <div class="latency-row">
+      <span class="latency-label">${label}</span>
+      <div class="latency-track">
+        <div class="latency-fill ${extraClass}" style="width:${pct.toFixed(1)}%"></div>
+      </div>
+      <span class="latency-val">${formatMs(ms)}</span>
+    </div>`;
+}
+
+// ─── Toggle Agent Enabled/Disabled ───────────────────────────────
+async function toggleAgentEnabled(name) {
+  try {
+    const res = await fetch(`/api/agents/${name}/toggle`, { method: 'PATCH' });
+    if (!res.ok) throw new Error(res.statusText);
+    const data = await res.json();
+    toast(`${formatName(name)} ${data.enabled ? 'enabled' : 'disabled'}`, 'success');
+    await fetchAgents();
+  } catch (e) {
+    toast(`Failed to toggle ${formatName(name)}`, 'error');
+  }
+}
+
+// ─── View Logs / Outputs in Modal ────────────────────────────────
+async function viewLogs(agentName) {
+  document.getElementById('modal-title').textContent = `Logs: ${formatName(agentName)}`;
+  document.getElementById('modal-body').textContent = 'Loading...';
+  document.getElementById('modal-overlay').style.display = '';
+  try {
+    const res = await fetch(`/api/logs/${agentName}?lines=500`);
+    if (!res.ok) throw new Error(res.statusText);
+    const data = await res.json();
+    if (data.lines.length === 0) {
+      document.getElementById('modal-body').textContent = 'No log entries found for this agent.';
+    } else {
+      document.getElementById('modal-body').textContent = data.lines.map(l =>
+        typeof l === 'object' ? JSON.stringify(l, null, 2) : String(l)
+      ).join('\n');
+    }
+  } catch (e) {
+    document.getElementById('modal-body').textContent = `Error loading logs: ${e.message}`;
+  }
+}
+
+async function viewOutputs(agentName) {
+  document.getElementById('modal-title').textContent = `Outputs: ${formatName(agentName)}`;
+  document.getElementById('modal-body').textContent = 'Loading...';
+  document.getElementById('modal-overlay').style.display = '';
+  try {
+    const res = await fetch('/api/outputs');
+    if (!res.ok) throw new Error(res.statusText);
+    const data = await res.json();
+    const agentOutputs = data.agents[agentName] || [];
+    if (agentOutputs.length === 0) {
+      document.getElementById('modal-body').textContent = 'No output files found for this agent.';
+    } else {
+      const lines = agentOutputs.map(f => {
+        const size = f.size < 1024 ? `${f.size}B` : `${(f.size/1024).toFixed(1)}KB`;
+        const time = new Date(f.modified * 1000).toLocaleString();
+        return `${f.name}  (${size}, ${time})`;
+      });
+      document.getElementById('modal-body').textContent = lines.join('\n');
+    }
+  } catch (e) {
+    document.getElementById('modal-body').textContent = `Error loading outputs: ${e.message}`;
+  }
+}
+
+async function viewOutputFile(path) {
+  document.getElementById('modal-title').textContent = path.split('/').pop();
+  document.getElementById('modal-body').textContent = 'Loading...';
+  document.getElementById('modal-overlay').style.display = '';
+  try {
+    const res = await fetch(`/api/outputs/${path}`);
+    if (!res.ok) throw new Error(res.statusText);
+    const contentType = res.headers.get('content-type') || '';
+    let text;
+    if (contentType.includes('json')) {
+      const data = await res.json();
+      text = JSON.stringify(data, null, 2);
+    } else {
+      text = await res.text();
+    }
+    document.getElementById('modal-body').textContent = text;
+  } catch (e) {
+    document.getElementById('modal-body').textContent = `Error loading file: ${e.message}`;
+  }
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').style.display = 'none';
+  document.getElementById('modal-body').textContent = '';
+}
+
+// ─── Outputs Tab ─────────────────────────────────────────────────
+async function fetchOutputs() {
+  try {
+    const res = await fetch('/api/outputs');
+    if (!res.ok) throw new Error(res.statusText);
+    state.outputs = await res.json();
+    renderOutputs();
+  } catch (e) {
+    state.outputs = null;
+    renderOutputs();
+  }
+}
+
+function renderOutputs() {
+  const container = document.getElementById('outputs-content');
+  if (!state.outputs || Object.keys(state.outputs.agents || {}).length === 0) {
+    container.innerHTML = `
+      <div class="metrics-empty">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/>
+        </svg>
+        <h3>No output files</h3>
+        <p>Agent outputs will appear here after agents process their first jobs.</p>
+      </div>`;
+    return;
+  }
+
+  let html = '';
+  for (const [agentName, files] of Object.entries(state.outputs.agents)) {
+    html += `
+      <div class="metrics-section">
+        <div class="section-header">
+          <div class="section-title">${esc(formatName(agentName))}</div>
+          <span style="font-size:12px;color:var(--text-3)">${files.length} file${files.length !== 1 ? 's' : ''}</span>
+        </div>
+        <div class="content-table-wrap">
+          <table class="content-table">
+            <thead><tr><th>File</th><th>Size</th><th>Modified</th><th></th></tr></thead>
+            <tbody>`;
+    for (const f of files) {
+      const size = f.size < 1024 ? `${f.size} B` : f.size < 1048576 ? `${(f.size/1024).toFixed(1)} KB` : `${(f.size/1048576).toFixed(1)} MB`;
+      const time = new Date(f.modified * 1000).toLocaleString();
+      html += `
+        <tr>
+          <td class="mono">${esc(f.name)}</td>
+          <td class="text-muted">${size}</td>
+          <td class="text-muted">${time}</td>
+          <td style="text-align:right">
+            <button class="btn btn-ghost btn-sm" onclick="viewOutputFile('${esc(f.name)}')">View</button>
+            <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="deleteOutput('${esc(f.name)}')">Delete</button>
+          </td>
+        </tr>`;
+    }
+    html += `</tbody></table></div></div>`;
+  }
+  container.innerHTML = html;
+}
+
+async function deleteOutput(path) {
+  if (!confirm(`Delete ${path}?`)) return;
+  try {
+    const res = await fetch(`/api/outputs/${path}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(res.statusText);
+    toast('File deleted', 'success');
+    fetchOutputs();
+  } catch (e) {
+    toast('Failed to delete file', 'error');
+  }
+}
+
+// ─── Audit Log Tab ───────────────────────────────────────────────
+async function fetchAuditLog() {
+  try {
+    const res = await fetch(`/api/audit-log?limit=${state.auditLimit}&offset=${state.auditOffset}`);
+    if (!res.ok) throw new Error(res.statusText);
+    state.auditLog = await res.json();
+    renderAuditLog();
+  } catch (e) {
+    state.auditLog = null;
+    renderAuditLog();
+  }
+}
+
+function renderAuditLog() {
+  const container = document.getElementById('audit-content');
+  if (!state.auditLog || state.auditLog.entries.length === 0) {
+    container.innerHTML = `
+      <div class="metrics-empty">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>
+        </svg>
+        <h3>No audit log entries</h3>
+        <p>Audit events will appear here as agents process work. Only metadata is logged, never document content.</p>
+      </div>`;
+    return;
+  }
+
+  const { entries, total, limit, offset } = state.auditLog;
+  const totalPages = Math.ceil(total / limit);
+  const currentPage = Math.floor(offset / limit) + 1;
+
+  let html = `
+    <div class="section-header">
+      <div class="section-title">Audit Log</div>
+      <span style="font-size:12px;color:var(--text-3)">${total} total entries</span>
+    </div>
+    <div class="content-table-wrap">
+      <table class="content-table">
+        <thead><tr><th>Time</th><th>Event</th><th>Agent</th><th>Details</th></tr></thead>
+        <tbody>`;
+
+  for (const entry of entries) {
+    const time = entry.timestamp ? new Date(entry.timestamp * 1000).toLocaleString() : (entry.ts || '--');
+    const event = entry.event || entry.action || '--';
+    const agent = entry.agent || entry.agent_name || '--';
+    const details = Object.keys(entry)
+      .filter(k => !['timestamp','ts','event','action','agent','agent_name','level'].includes(k))
+      .map(k => `${k}=${typeof entry[k] === 'object' ? JSON.stringify(entry[k]) : entry[k]}`)
+      .join(', ');
+
+    html += `
+      <tr>
+        <td class="mono text-muted" style="white-space:nowrap">${esc(String(time))}</td>
+        <td style="font-weight:530">${esc(event)}</td>
+        <td>${esc(agent)}</td>
+        <td class="text-muted" style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(details)}">${esc(details)}</td>
+      </tr>`;
+  }
+
+  html += `</tbody></table></div>`;
+
+  // Pagination
+  if (totalPages > 1) {
+    html += `
+      <div class="pagination">
+        <button class="btn btn-outline btn-sm" ${currentPage <= 1 ? 'disabled' : ''} onclick="auditPage(${offset - limit})">Prev</button>
+        <span>Page ${currentPage} of ${totalPages}</span>
+        <button class="btn btn-outline btn-sm" ${currentPage >= totalPages ? 'disabled' : ''} onclick="auditPage(${offset + limit})">Next</button>
+      </div>`;
+  }
+
+  container.innerHTML = html;
+}
+
+function auditPage(newOffset) {
+  state.auditOffset = Math.max(0, newOffset);
+  fetchAuditLog();
+}
+
+// ─── SVG Chart Helpers ───────────────────────────────────────────
+function renderTimeSeriesChart(containerId, data, label, color) {
+  if (!data || data.length === 0) return '';
+  const width = 600, height = 160, padL = 50, padR = 20, padT = 10, padB = 30;
+  const cw = width - padL - padR, ch = height - padT - padB;
+
+  const values = data.map(d => d.value || 0);
+  const maxVal = Math.max(...values, 1);
+  const minVal = Math.min(...values, 0);
+  const range = maxVal - minVal || 1;
+
+  const points = data.map((d, i) => {
+    const x = padL + (i / Math.max(data.length - 1, 1)) * cw;
+    const y = padT + ch - ((d.value - minVal) / range) * ch;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+
+  const areaPoints = `${padL},${padT + ch} ${points.join(' ')} ${padL + cw},${padT + ch}`;
+
+  // Y-axis labels
+  const yLabels = [0, 1, 2, 3, 4].map(i => {
+    const val = minVal + (range * i / 4);
+    const y = padT + ch - (ch * i / 4);
+    return `<text x="${padL - 8}" y="${y + 4}" text-anchor="end" fill="var(--text-3)" font-size="10">${Math.round(val)}</text>
+    <line x1="${padL}" y1="${y}" x2="${padL + cw}" y2="${y}" stroke="var(--border)" stroke-dasharray="3,3"/>`;
+  }).join('');
+
+  // X-axis labels (first, mid, last)
+  const xLabels = [0, Math.floor(data.length / 2), data.length - 1]
+    .filter(i => data[i])
+    .map(i => {
+      const x = padL + (i / Math.max(data.length - 1, 1)) * cw;
+      const t = data[i].hour || data[i].time || '';
+      return `<text x="${x}" y="${height - 4}" text-anchor="middle" fill="var(--text-3)" font-size="10">${esc(String(t).slice(-5))}</text>`;
+    }).join('');
+
+  return `
+    <div class="chart-container">
+      <div class="chart-title">${esc(label)}</div>
+      <svg class="chart-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet">
+        ${yLabels}
+        ${xLabels}
+        <polygon points="${areaPoints}" fill="${color}" opacity="0.1"/>
+        <polyline points="${points.join(' ')}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/>
+      </svg>
+    </div>`;
+}
+
+// ─── CSV Export ──────────────────────────────────────────────────
+async function exportMetricsCsv() {
+  try {
+    const res = await fetch('/api/metrics/export?format=csv');
+    if (!res.ok) throw new Error(res.statusText);
+    const csv = await res.text();
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'metrics_export.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+    toast('Metrics exported', 'success');
+  } catch (e) {
+    toast('Failed to export metrics', 'error');
+  }
+}
+
+// ─── Event Handlers ───────────────────────────────────────────────
+function toggleSelect(name) {
+  if (state.selected.has(name)) {
+    state.selected.delete(name);
+  } else {
+    state.selected.add(name);
+  }
+  renderAgents();
+}
+
+function toggleDetails(name) {
+  if (state.expanded.has(name)) {
+    state.expanded.delete(name);
+  } else {
+    state.expanded.add(name);
+  }
+  renderAgents();
+}
+
+function handleRunClick() {
+  const names = [...state.selected];
+  if (names.length === 0) return;
+  startAgents(names);
+}
+
+// ─── Toast ────────────────────────────────────────────────────────
+function toast(message, type = 'info') {
+  const container = document.getElementById('toasts');
+  const el = document.createElement('div');
+  el.className = `toast toast-${type}`;
+  el.textContent = message;
+  container.appendChild(el);
+  setTimeout(() => {
+    el.classList.add('leaving');
+    setTimeout(() => el.remove(), 200);
+  }, 3500);
+}
+
+// ─── Utility ──────────────────────────────────────────────────────
+function esc(s) {
+  if (s == null) return '';
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+// ─── Init ─────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('run-btn').addEventListener('click', handleRunClick);
+  document.getElementById('stop-all-btn').addEventListener('click', stopAllAgents);
+
+  fetchAgents();
+  // Poll both agents and metrics
+  setInterval(() => {
+    fetchAgents();
+    if (state.activeTab === 'metrics') fetchMetrics();
+  }, 5000);
+});
+</script>
+</body>
+</html>

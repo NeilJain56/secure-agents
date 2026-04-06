@@ -1,0 +1,93 @@
+# Setup Manifest - Declarative requirements for tools and providers.
+#
+# The setup script reads agent configs from config.yaml to determine which
+# tools and providers each agent needs, then consults THIS file to determine
+# what must be installed, configured, and authenticated.
+#
+# To add a new agent: just add it to config.yaml with its tools list.
+# To add a new tool/provider type: add an entry here.
+
+tools:
+  email_reader:
+    credentials:
+      - key: email_password
+        label: "Gmail App Password (16-char code from myaccount.google.com/apppasswords)"
+        condition: "auth_method == app_password"
+        hide_input: true
+      - key: oauth2
+        label: "Gmail OAuth2 authorization (opens browser)"
+        condition: "auth_method == oauth2"
+        flow: gmail_oauth2
+    config_required:
+      - path: defaults.email.imap.username
+        prompt: "Gmail address for receiving email (IMAP)"
+        sentinel: "your-email@gmail.com"
+
+  email_sender:
+    # Same credentials as email_reader -- deduplication handled automatically
+    credentials:
+      - key: email_password
+        condition: "auth_method == app_password"
+        hide_input: true
+      - key: oauth2
+        label: "Gmail OAuth2 authorization (opens browser)"
+        condition: "auth_method == oauth2"
+        flow: gmail_oauth2
+    config_required:
+      - path: defaults.email.smtp.username
+        prompt: "Gmail address for sending email (SMTP)"
+        sentinel: "your-email@gmail.com"
+
+  document_parser:
+    credentials: []
+
+  file_storage:
+    credentials: []
+    directories:
+      - output
+
+providers:
+  ollama:
+    homebrew:
+      - ollama
+    post_install:
+      - action: start_service
+        service: ollama
+        check_url: "http://localhost:11434/api/tags"
+      - action: pull_model
+        model_key: provider.ollama.model
+        default: llama3.2
+    credentials: []
+
+  anthropic:
+    pip_extras:
+      - anthropic
+    credentials:
+      - key: anthropic_api_key
+        label: "Anthropic API key (starts with sk-ant-)"
+        hide_input: true
+
+  openai:
+    pip_extras:
+      - openai
+    credentials:
+      - key: openai_api_key
+        label: "OpenAI API key (starts with sk-)"
+        hide_input: true
+
+  gemini:
+    pip_extras:
+      - gemini
+    credentials:
+      - key: gemini_api_key
+        label: "Gemini API key"
+        hide_input: true
+
+# Always created regardless of agent selection
+common:
+  directories:
+    - data
+    - logs
+    - temp
+  pip_extras:
+    - gmail-oauth  # needed for OAuth2 email flow

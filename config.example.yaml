@@ -1,0 +1,114 @@
+# Secure Agents Configuration
+# Copy this file to config.yaml and update with your settings.
+#
+# IMPORTANT: Credentials (passwords, API keys) are NEVER stored in this file.
+# They are resolved from: macOS Keychain > environment variables > OAuth2 tokens.
+# Run `secure-agents auth setup` to configure credentials securely.
+
+# ─── Defaults ────────────────────────────────────────────────────────────────
+# Shared fallback values inherited by all agents.
+# Any agent can override any value here in its own section below.
+defaults:
+  email:
+    imap:
+      host: imap.gmail.com
+      port: 993
+      username: your-email@gmail.com
+      auth_method: app_password  # "oauth2" or "app_password"
+      use_ssl: true
+    smtp:
+      host: smtp.gmail.com
+      port: 587
+      username: your-email@gmail.com
+      auth_method: app_password
+      use_tls: true
+
+  security:
+    max_file_size_mb: 50
+    allowed_file_types: [.pdf, .docx, .doc]
+    sandbox_enabled: false
+    audit_log_path: ./logs/audit.log
+    temp_dir: ./temp
+    auto_cleanup: true
+
+  storage:
+    output_dir: ./output
+    retention_days: 90
+
+# ─── LLM Providers ──────────────────────────────────────────────────────────
+# API keys are read from keychain/env vars, never from this file.
+provider:
+  active: ollama
+
+  ollama:
+    host: http://localhost:11434
+    model: llama3.2
+    temperature: 0.1
+
+  anthropic:
+    model: claude-sonnet-4-20250514
+    temperature: 0.1
+
+  openai:
+    model: gpt-4o
+    temperature: 0.1
+
+  gemini:
+    model: gemini-2.5-flash
+    temperature: 0.1
+
+# ─── Concurrency ────────────────────────────────────────────────────────────
+# Maximum number of agent threads running simultaneously.
+max_workers: 4
+
+# ─── Job Queue ───────────────────────────────────────────────────────────────
+queue:
+  db_path: ./data/jobs.db
+  max_retries: 3
+  retry_delay_seconds: 60
+
+# ─── Agents ──────────────────────────────────────────────────────────────────
+# Each agent has its own self-contained config section.
+# Values here are merged ON TOP of `defaults` above -- agents inherit
+# everything from defaults and can override whatever they need.
+#
+# To add a new agent: just add a new entry here with enabled: true.
+# To disable an agent: set enabled: false.
+# To run only specific agents: secure-agents start agent1 agent2
+agents:
+  nda_reviewer:
+    enabled: true
+    poll_interval_seconds: 60
+    concurrency_limit: 1
+    tools:
+      - email_reader
+      - email_sender
+      - document_parser
+      - file_storage
+    # Triggers: optional cron or file-watch triggers
+    # triggers:
+    #   - type: cron
+    #     interval: "every 5m"
+    #   - type: file_watch
+    #     path: ./inbox
+    #     patterns: ["*.pdf", "*.docx"]
+    # This agent inherits all defaults as-is. No overrides needed.
+
+  # ── Example: a different agent with different settings ──────────────────
+  # contract_analyzer:
+  #   enabled: true
+  #   poll_interval_seconds: 120
+  #   tools:
+  #     - email_reader
+  #     - document_parser
+  #     - file_storage
+  #   # Override defaults for THIS agent only:
+  #   security:
+  #     max_file_size_mb: 200            # Contracts can be large
+  #     allowed_file_types: [.pdf]       # Only PDFs
+  #   storage:
+  #     output_dir: ./output/contracts   # Separate output directory
+  #     retention_days: 365              # Keep for a year
+  #   provider:
+  #     override: anthropic              # Use Claude instead of Ollama
+  #     model: claude-sonnet-4-20250514
