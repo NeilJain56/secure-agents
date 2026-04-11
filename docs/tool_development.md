@@ -97,7 +97,7 @@ from secure_agents.core.credentials import get_credential, get_oauth2_token
 
 class MyTool(BaseTool):
     def execute(self, **kwargs):
-        # Read from macOS Keychain or environment variable
+        # Read from the active credential backend (Keychain or encrypted file)
         api_key = get_credential("my_tool_api_key")
         if not api_key:
             return {"error": "No API key found. Run: secure-agents auth setup"}
@@ -112,10 +112,13 @@ class MyTool(BaseTool):
 ```
 
 Credential lookup order:
-1. macOS Keychain (via `keyring` library, service name `"secure-agents"`)
-2. Environment variable (uppercase version of the key, e.g., `MY_TOOL_API_KEY`)
+1. The active backend, selected by `credentials.backend` in `config.yaml`:
+   - `keychain` — macOS Keychain (via the `keyring` library, service name `"secure-agents"`)
+   - `encrypted_file` — AES-256-GCM encrypted JSON store unlocked with a master passphrase
+   - `auto` (default) — picks `keychain` on macOS, `encrypted_file` everywhere else
+2. Environment variable (uppercase version of the key, e.g. `MY_TOOL_API_KEY`) — always honored as a per-secret fallback so users can override individual values without re-running setup.
 
-Users store credentials with `secure-agents auth setup` or by setting env vars.
+Users store credentials with `secure-agents auth setup` (or `secure-agents auth init-store` first on a Linux VM) or by setting env vars.
 
 ## Implementing Connection Testing
 
@@ -167,19 +170,19 @@ Conventions for `execute()` return values:
 
 ## Best Practices for Credential Handling
 
-1. **Never store credentials in config files.** Use `get_credential()` from `core/credentials.py`. OAuth2 client_secret is stored in Keychain, not on disk.
+1. **Never store credentials in config files.** Use `get_credential()` from `core/credentials.py`. OAuth2 client_secret is stored in the active credential backend, not on disk.
 2. **Never log credentials.** Use structlog and log metadata only.
 3. **Fail clearly.** If a credential is missing, return a helpful error message telling the user how to set it up. Note: error messages in API responses are sanitized -- do not leak internal details.
 4. **Validate early.** Check credentials in `validate_config()` so the dashboard can show the problem before the agent starts.
-5. **Support both Keychain and env vars.** `get_credential()` handles this automatically -- just pick a consistent key name.
-6. **No cloud provider keys.** Only Ollama (local inference) is supported. There are no cloud API keys (Anthropic, OpenAI, Gemini) to manage.
+5. **Backend-agnostic.** `get_credential()` resolves through whichever backend the user configured (Keychain, encrypted file) and falls back to the environment automatically -- just pick a consistent key name and don't reach for `keyring` directly.
+6. **No cloud provider keys.** Only local LLM backends are supported (Ollama, llama.cpp, vLLM, LM Studio, LocalAI, openai_compat) and every provider class declares `local_only = True`. There are no cloud API keys (Anthropic, OpenAI, Gemini) to manage.
 
 ## Security Considerations for Tools
 
 - **File validation uses magic bytes.** `validate_file()` in `core/security.py` checks magic bytes (not just file extensions) to verify file types. Always call it before processing uploaded or received files.
 - **Path traversal protection.** File storage has path traversal protection built in. Do not construct file paths by concatenating user input -- use the `file_storage` tool or the security utilities.
 - **Sandbox execution.** Sandbox is enabled by default and requires Docker. Document parsing routes through the Docker sandbox when `sandbox_enabled=True`. If Docker is missing and sandbox is enabled, it fails with a hard error (no subprocess fallback).
-- **Input sanitization.** `sanitize_text()` in `core/security.py` detects 20+ prompt injection patterns with unicode normalization. Always sanitize user/document content before passing to the provider.
+- **Prompt injection defense is structural, not regex-based.** Tools should not invent their own scrubbing. If a tool is going to hand text off to an LLM, the calling agent is responsible for using `MessageBuilder` (untrusted text in a tagged `Message`), the `InputValidator`, and a `response_schema` from `core/schemas.py`. There is no `sanitize_text()` function -- it was deleted.
 - **TLS/SSL on email.** TLS/SSL is always enforced on email connections. There are no `use_tls`/`use_ssl` toggles -- you must set `allow_insecure_connections: true` to override.
 
 ## Template File

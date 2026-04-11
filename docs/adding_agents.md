@@ -17,10 +17,22 @@ Create `src/secure_agents/agents/your_agent/agent.py`:
 import structlog
 
 from secure_agents.core.base_agent import BaseAgent
-from secure_agents.core.base_provider import Message
+from secure_agents.core.message_builder import MessageBuilder
 from secure_agents.core.registry import register_agent
+from secure_agents.core.schemas import validate_schema
+from secure_agents.core.validator import InputValidator
 
 logger = structlog.get_logger()
+
+YOUR_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "score": {"type": "integer", "minimum": 0, "maximum": 10},
+    },
+    "required": ["summary", "score"],
+    "additionalProperties": False,
+}
 
 
 @register_agent("your_agent")
@@ -31,23 +43,45 @@ class YourAgent(BaseAgent):
     def __init__(self, tools, provider, config=None):
         super().__init__(tools, provider, config)
         self.poll_interval = self.config.get("poll_interval_seconds", 60)
+        validator_cfg = (self.config.get("validator") or {})
+        self._validator = None if validator_cfg.get("skip") else InputValidator(
+            provider,
+            confidence_threshold=validator_cfg.get("confidence_threshold", 0.7),
+        )
 
     def tick(self):
         # This runs in a loop. Implement your workflow here.
-
-        # Use tools:
         email_reader = self.get_tool("email_reader")
         result = email_reader.execute(folder="INBOX")
 
-        # Use the LLM provider:
-        messages = [
-            Message(role="system", content="You are a helpful assistant."),
-            Message(role="user", content="Analyze this document..."),
-        ]
-        response = self.provider.complete(messages)
+        document_text = result.get("text", "")
 
-        # Read agent-specific settings from your merged config:
-        max_size = self.config.get("security", {}).get("max_file_size_mb", 50)
+        # Layer 2: screen untrusted text with the validator (fails closed).
+        if self._validator is not None:
+            verdict = self._validator.check(document_text)
+            if verdict.verdict != "safe":
+                logger.warning("validator_rejected", reasons=verdict.reasons)
+                return
+
+        # Layer 3: build messages with explicit boundaries — system prompt
+        # NEVER contains user-controlled text.
+        messages = (
+            MessageBuilder("You are a helpful assistant. Analyze the document.")
+            .add_instruction("Return JSON with `summary` and `score`.")
+            .add_untrusted("document", document_text)
+            .build()
+        )
+
+        # Layer 1: structured output schema constrains the LLM response.
+        response = self.provider.complete(messages, response_schema=YOUR_RESPONSE_SCHEMA)
+
+        ok, parsed = validate_schema(response.content, YOUR_RESPONSE_SCHEMA)
+        if not ok:
+            logger.warning("schema_validation_failed", error=parsed)
+            return
+
+        # parsed is now a dict matching YOUR_RESPONSE_SCHEMA
+        logger.info("analyzed", score=parsed["score"])
 
         # Use _stop_event.wait() instead of time.sleep() for clean shutdown
         self._stop_event.wait(self.poll_interval)
@@ -74,7 +108,7 @@ agents:
       output_dir: ./output/your_agent  # Separate output dir
 ```
 
-**You don't need to touch `defaults` or any other agent's config.** Your agent gets its own isolated settings. Note: only Ollama (local inference) is supported -- no cloud providers are available, so no data ever leaves the machine.
+**You don't need to touch `defaults` or any other agent's config.** Your agent gets its own isolated settings. Note: only local LLM backends are supported (Ollama, llama.cpp, vLLM, LM Studio, LocalAI) and every provider declares `local_only = True`, so no data ever leaves the machine.
 
 ## Step 4: Run It
 
@@ -104,16 +138,19 @@ Each agent gets its own tool instances with its own config, so two agents can us
 
 ## Provider
 
-Only Ollama (local inference) is supported. No cloud providers (Anthropic, OpenAI, Gemini) are available -- all LLM processing stays on-machine. Your agent uses the provider interface without needing to know the implementation details.
+Pluggable local LLM backends. Cloud providers (Anthropic, OpenAI, Gemini) have been removed -- all inference stays on-machine. Built-in backends: `ollama`, `llamacpp`, `vllm`, `lmstudio`, `localai`, and the generic `openai_compat` for any OpenAI-compatible local server. Each provider class declares `local_only = True` and the builder rejects anything else.
 
-The global provider is set in `provider.active` (must be `ollama`).
+The global provider is set via `provider.active`. An agent can pick a different provider just for itself via `agents.<name>.provider.override` (with optional `model`, `temperature`, `host`).
 
 ## Tips
 
 - **Keep agents thin** - Put workflow logic in `tick()`, delegate I/O to tools
 - **Reuse tools** - Don't reimplement email or document parsing
 - **Use `_stop_event.wait()`** instead of `time.sleep()` so agents shut down cleanly
-- **Use the provider interface** - Call `self.provider.complete(messages)` rather than importing Ollama directly
+- **Use the provider interface** - Call `self.provider.complete(messages, response_schema=...)` rather than importing a backend directly
+- **Always pass `response_schema`** - Structured outputs are the first layer of injection defense; never make a free-form `complete()` call
+- **Use `MessageBuilder` for untrusted text** - Never concatenate document content into a system prompt
+- **Run untrusted text through `InputValidator`** - It fails closed; treat any non-`safe` verdict as a hard reject
 - **Log metadata only** - Never log document content or PII
 - **Override only what you need** - Your agent inherits all defaults; only specify what's different
 - **Agent names must be valid** - Lowercase alphanumeric characters and underscores only

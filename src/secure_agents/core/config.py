@@ -1,15 +1,17 @@
 """Configuration loading from YAML with environment variable interpolation.
 
 Design principle: agent config is self-contained. Each agent entry under
-`agents.<name>` is a freeform dict that the agent owns completely. It can
+``agents.<name>`` is a freeform dict that the agent owns completely. It can
 specify its own tool settings, file size limits, polling intervals, etc.
 
-The top-level `defaults` section provides fallback values that agents inherit
+The top-level ``defaults`` section provides fallback values that agents inherit
 if they don't override them. This means adding a new agent never requires
 touching global config sections.
 
-Security principle: only local LLM providers are supported. No data leaves
-your machine. There are no cloud provider options to accidentally enable.
+Provider abstraction: any local LLM provider can be used (Ollama, llama.cpp,
+vLLM, LM Studio, LocalAI, etc.).  The ``provider`` section configures the
+active provider and its settings.  Each registered provider must declare
+``local_only = True`` — the builder enforces this at runtime.
 """
 
 from __future__ import annotations
@@ -69,15 +71,45 @@ class ProviderSettings(BaseModel):
 
 
 class ProviderConfig(BaseModel):
-    """Provider configuration — only local inference via Ollama is supported."""
+    """Provider configuration.
+
+    The ``active`` field names the provider to use (e.g. "ollama", "llamacpp",
+    "vllm").  Provider-specific settings live under a key matching the
+    provider name.  Any registered provider with ``local_only = True`` is
+    allowed — the builder verifies this at runtime.
+    """
     active: str = "ollama"
     ollama: ProviderSettings = ProviderSettings(host="http://localhost:11434", model="llama3.2")
+    llamacpp: ProviderSettings = ProviderSettings(host="http://localhost:8080", model="default")
+    vllm: ProviderSettings = ProviderSettings(host="http://localhost:8000", model="default")
+    lmstudio: ProviderSettings = ProviderSettings(host="http://localhost:1234", model="default")
+    localai: ProviderSettings = ProviderSettings(host="http://localhost:8080", model="default")
 
 
 class QueueConfig(BaseModel):
     db_path: str = "./data/jobs.db"
     max_retries: int = 3
     retry_delay_seconds: int = 60
+
+
+class CredentialsConfig(BaseModel):
+    """Credential storage selection.
+
+    ``backend`` chooses where secrets live:
+
+    * ``"auto"`` -- Keychain on macOS, encrypted file everywhere else
+      (recommended for VMs and headless servers).
+    * ``"keychain"`` -- macOS Keychain via the ``keyring`` library.
+    * ``"encrypted_file"`` -- AES-256-GCM encrypted JSON store under
+      ``store_path``.  Master passphrase comes from
+      ``SECURE_AGENTS_MASTER_KEY`` or an interactive prompt.
+
+    The environment variable lookup is *always* consulted as a fallback
+    after the configured backend, so users can override individual
+    secrets with ``KEY=value`` without re-running setup.
+    """
+    backend: str = "auto"
+    store_path: str = "~/.secure-agents/credentials.enc"
 
 
 # Valid agent name pattern: lowercase alphanumeric + underscores, 1-64 chars
@@ -92,26 +124,34 @@ def validate_agent_name(name: str) -> bool:
 class AppConfig(BaseModel):
     """Top-level application config.
 
-    - `defaults`: shared fallback values for all agents (email, security, storage, etc.)
-    - `provider`: LLM provider selection and settings (local only)
-    - `queue`: job queue settings
-    - `agents`: per-agent config dicts; each inherits from defaults then overrides
+    - ``defaults``: shared fallback values for all agents
+    - ``provider``: LLM provider selection and settings (local providers only)
+    - ``queue``: job queue settings
+    - ``agents``: per-agent config dicts; each inherits from defaults then overrides
     """
     defaults: dict[str, Any] = {}
     provider: ProviderConfig = ProviderConfig()
     queue: QueueConfig = QueueConfig()
+    credentials: CredentialsConfig = CredentialsConfig()
     agents: dict[str, dict[str, Any]] = {}
     max_workers: int = 4  # global maximum concurrent agent threads
 
     def get_agent_config(self, agent_name: str) -> dict[str, Any]:
-        """Get the merged config for an agent: defaults + agent overrides.
-
-        This is the key to modularity. An agent's config section can override
-        any default without touching global sections. Two agents can have
-        completely different file size limits, email settings, tool configs, etc.
-        """
+        """Get the merged config for an agent: defaults + agent overrides."""
         agent_raw = self.agents.get(agent_name, {})
         return _deep_merge(self.defaults, agent_raw)
+
+    def get_provider_settings(self, provider_name: str | None = None) -> ProviderSettings:
+        """Get settings for a provider by name (defaults to the active provider)."""
+        name = provider_name or self.active_provider
+        if hasattr(self.provider, name):
+            return getattr(self.provider, name)
+        # Unknown provider — return default settings
+        return ProviderSettings()
+
+    @property
+    def active_provider(self) -> str:
+        return self.provider.active
 
 
 def load_config(path: str | Path = "config.yaml") -> AppConfig:
@@ -121,7 +161,6 @@ def load_config(path: str | Path = "config.yaml") -> AppConfig:
     Falls back to defaults if the file doesn't exist.
 
     Validates:
-    - Only 'ollama' is allowed as a provider (no cloud egress)
     - Agent names are safe for file paths
     """
     path = Path(path)
@@ -134,14 +173,6 @@ def load_config(path: str | Path = "config.yaml") -> AppConfig:
         raw = {}
 
     config = AppConfig.model_validate(raw)
-
-    # Enforce: only local providers allowed
-    if config.provider.active != "ollama":
-        raise ValueError(
-            f"Provider '{config.provider.active}' is not allowed. "
-            f"Only 'ollama' (local inference) is supported. "
-            f"No data leaves your machine."
-        )
 
     # Validate agent names
     for name in config.agents:

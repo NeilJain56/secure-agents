@@ -1,7 +1,8 @@
 """Shared agent building and plugin discovery logic.
 
 Used by both the CLI and the web UI server to avoid duplication.
-Only local providers (Ollama) are supported — no cloud egress.
+Only local providers are supported — any provider class must declare
+``local_only = True``.  This is enforced at build time.
 """
 
 from __future__ import annotations
@@ -20,27 +21,38 @@ def discover_all() -> None:
 def build_agent(agent_name: str, config: AppConfig):
     """Instantiate an agent with its tools and provider from merged config.
 
-    Only the Ollama provider is supported. Cloud providers have been removed
-    to ensure no data ever leaves the machine.
+    Provider selection:
+    - Default is the ``provider.active`` value from the top-level config.
+    - An agent can override the provider via ``provider.override`` in its
+      own config section (e.g. use a smaller/lighter model for one agent).
+    - The selected provider class MUST declare ``local_only = True``;
+      otherwise a ValueError is raised.  This is the on-prem guarantee.
     """
     merged = config.get_agent_config(agent_name)
 
-    # Resolve provider — only ollama is allowed
-    provider_name = merged.get("provider", {}).get("override", config.provider.active)
-    if provider_name != "ollama":
+    # Resolve provider — any registered local provider is allowed
+    agent_provider_cfg = merged.get("provider", {}) or {}
+    provider_name = agent_provider_cfg.get("override") or config.active_provider
+
+    provider_cls = registry.get_provider(provider_name)
+
+    # Enforce: provider must be local-only
+    if not getattr(provider_cls, "local_only", False):
         raise ValueError(
-            f"Provider '{provider_name}' is not allowed. "
-            f"Only 'ollama' (local inference) is supported. "
+            f"Provider '{provider_name}' is not declared local_only=True. "
+            f"Secure Agents only supports on-prem/local inference providers. "
             f"No data leaves your machine."
         )
-    provider_cls = registry.get_provider(provider_name)
-    provider_settings = config.provider.ollama
+
+    # Build provider config: top-level settings + per-agent overrides
+    provider_settings = config.get_provider_settings(provider_name)
     provider_config = provider_settings.model_dump()
-    agent_provider = merged.get("provider", {})
-    if "model" in agent_provider:
-        provider_config["model"] = agent_provider["model"]
-    if "temperature" in agent_provider:
-        provider_config["temperature"] = agent_provider["temperature"]
+    if "model" in agent_provider_cfg:
+        provider_config["model"] = agent_provider_cfg["model"]
+    if "temperature" in agent_provider_cfg:
+        provider_config["temperature"] = agent_provider_cfg["temperature"]
+    if "host" in agent_provider_cfg:
+        provider_config["host"] = agent_provider_cfg["host"]
     provider = provider_cls(provider_config)
 
     # Resolve tools — each tool gets config from the merged agent config

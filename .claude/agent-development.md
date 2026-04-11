@@ -10,7 +10,7 @@ Secure Agents has three component types, all registered via decorators:
 
 - **Agent** (`@register_agent`) — Orchestrates a workflow by composing tools + an LLM provider. Lives in `src/secure_agents/agents/<name>/agent.py`.
 - **Tool** (`@register_tool`) — A reusable capability (email, parsing, storage, API calls). Lives in `src/secure_agents/tools/<name>.py`.
-- **Provider** (`@register_provider`) — LLM backend (Ollama only -- local inference, no data leaves the machine). Lives in `src/secure_agents/providers/ollama.py`.
+- **Provider** (`@register_provider`) — LLM backend abstraction. Any local backend can be plugged in (`ollama`, `llamacpp`, `vllm`, `lmstudio`, `localai`, `openai_compat`). Each provider class MUST set `local_only = True`; the builder rejects anything else. Lives in `src/secure_agents/providers/<name>.py`.
 
 All three are auto-discovered at import time. No manual registration required.
 
@@ -41,7 +41,7 @@ Rules:
 - NEVER use `time.sleep()` — it blocks clean shutdown.
 - Access tools via `self.get_tool("name")`, not `self.tools` directly.
 - `self.config` is already deep-merged (defaults + agent overrides).
-- `self.provider.complete(messages)` calls the LLM. Messages use `Message(role=, content=)`.
+- `self.provider.complete(messages, response_schema=...)` calls the LLM. Messages use `Message(role=, content=, name=)`. ALWAYS pass a `response_schema` for structured outputs and build messages with `MessageBuilder`, not by hand.
 
 ### BaseTool (src/secure_agents/core/base_tool.py)
 
@@ -64,11 +64,29 @@ Rules:
 ### BaseProvider (src/secure_agents/core/base_provider.py)
 
 ```python
+@dataclass
+class Message:
+    role: str          # "system" | "user" | "assistant"
+    content: str
+    name: str = ""     # optional provenance tag (e.g. "untrusted_document")
+
 class BaseProvider(ABC):
-    def complete(self, messages: list[Message], model: str = None,
-                 temperature: float = None, json_mode: bool = False) -> CompletionResponse
-    def is_available(self) -> bool
+    local_only: bool = True   # MUST stay True for any provider in this framework
+
+    def complete(
+        self,
+        messages: list[Message],
+        *,
+        model: str | None = None,
+        temperature: float | None = None,
+        json_mode: bool = False,
+        response_schema: dict | None = None,
+    ) -> CompletionResponse: ...
+
+    def is_available(self) -> bool: ...
 ```
+
+When `response_schema` is provided, the provider MUST forward it to its backend's native structured-output mechanism (Ollama `format`, llama.cpp `json_schema`, OpenAI-compatible `response_format` with `json_schema`).
 
 ---
 
@@ -83,13 +101,20 @@ class BaseProvider(ABC):
 
 ---
 
-## Provider
+## Providers
 
-Only Ollama (local inference) is supported. Cloud providers (Anthropic, OpenAI, Gemini) have been removed entirely. No data ever leaves the machine.
+Pluggable local LLM backends. Cloud providers have been removed entirely; every provider class declares `local_only = True` and the builder verifies it. No data ever leaves the machine.
 
-| Provider | Config Key | Default Model |
-|----------|-----------|---------------|
-| Ollama (local) | `ollama` | `llama3.2` |
+| Provider Name | Backend | Config Key | How structured outputs work |
+|---------------|---------|------------|-----------------------------|
+| `ollama` | Ollama | `ollama` | Native `format: <schema>` |
+| `llamacpp` | llama.cpp server | `llamacpp` | `json_schema` GBNF grammar at `/completion` |
+| `vllm` | vLLM | `vllm` | OpenAI-compatible `response_format` |
+| `lmstudio` | LM Studio | `lmstudio` | OpenAI-compatible `response_format` |
+| `localai` | LocalAI | `localai` | OpenAI-compatible `response_format` |
+| `openai_compat` | Any local OpenAI-compatible server | (uses defaults) | Hostname must resolve to private/loopback |
+
+The active provider is selected via `provider.active`. Per-agent overrides go under `agents.<name>.provider.override` (with optional `model`, `temperature`, `host`).
 
 ---
 
@@ -106,10 +131,13 @@ defaults:
     sandbox_enabled: true       # Default, requires Docker
 
 provider:
-  active: ollama                # Only supported provider
+  active: ollama                # any registered local provider
   ollama:
     host: http://localhost:11434
     model: llama3.2
+  llamacpp:
+    host: http://localhost:8080
+    model: default
 
 agents:
   my_agent:
@@ -134,8 +162,11 @@ tool_configs["your_tool"] = merged.get("your_tool", {})
 ## Security Rules
 
 1. **Never log document content or PII.** Use `structlog.get_logger()` and log metadata only (filenames, counts, status).
-2. **Never store credentials in config.** Use `get_credential()` or `get_oauth2_token()` from `core/credentials.py`. OAuth2 client_secret is stored in Keychain, not on disk.
-3. **Sanitize text before LLM.** Call `sanitize_text()` from `core/security.py` on any user/document content before passing to the provider. Expanded to 20+ prompt injection patterns with unicode normalization.
+2. **Never store credentials in config.** Use `get_credential()` or `get_oauth2_token()` from `core/credentials.py`. Credentials resolve through a pluggable backend (`core/credential_backends.py`) — macOS Keychain on laptops, AES-256-GCM encrypted file unlocked with a scrypt-derived master passphrase on Linux VMs and headless servers; environment variables are always honored as a per-secret fallback. OAuth2 `client_secret` is stored in the active backend, never on disk.
+3. **Use the three-layer prompt injection defense, not regex.**
+   - Always pass a `response_schema` (from `core/schemas.py`) on every LLM call so the provider constrains the output shape, then re-validate the parsed JSON via `validate_schema()` as defense in depth.
+   - Run untrusted text through `InputValidator.check()` (from `core/validator.py`) before it reaches the primary agent; treat any non-`safe` verdict as a hard reject and log it via the audit log.
+   - Build messages with `MessageBuilder` (from `core/message_builder.py`): `add_instruction()` for trusted text, `add_untrusted(label, content)` for everything user-controlled. Never concatenate untrusted text into the system prompt.
 4. **Validate files before parsing.** Call `validate_file()` from `core/security.py` to check type and size. Uses magic byte validation (not just extension checks).
 5. **Use the audit log.** `AuditLog` from `core/security.py` records metadata-only events.
 6. **Sandbox is enabled by default.** Docker is required. No subprocess fallback -- if Docker is missing and sandbox is enabled, it fails with a hard error. Document parsing routes through the Docker sandbox.
@@ -145,7 +176,7 @@ tool_configs["your_tool"] = merged.get("your_tool", {})
 10. **Error messages sanitized.** API responses do not leak internal details, stack traces, or credentials.
 11. **Job queue DB permissions.** The SQLite job queue DB file has 0o600 permissions (owner read/write only).
 12. **Dashboard hardened.** CORS restrictions, per-session auth token, binds to 127.0.0.1 only.
-13. **Ollama only.** No cloud providers -- no data ever leaves the machine.
+13. **Local providers only.** Every provider class must declare `local_only = True`. The builder enforces this -- no data ever leaves the machine.
 
 ---
 
@@ -154,10 +185,12 @@ tool_configs["your_tool"] = merged.get("your_tool", {})
 The NDA Reviewer agent at `src/secure_agents/agents/nda_reviewer/agent.py` is the canonical example. It demonstrates:
 - Email polling via `email_reader` tool
 - Document parsing via `document_parser` tool
-- LLM analysis with structured JSON output
+- `InputValidator` screening untrusted text before analysis
+- `MessageBuilder` separating system prompt, instruction, and untrusted document
+- LLM analysis with `response_schema=NDA_REVIEW_SCHEMA` and re-validation via `validate_schema()`
 - Report storage via `file_storage` tool
 - Email reply via `email_sender` tool
-- Input sanitization, audit logging, and error handling
+- Audit logging and error handling
 
 Study this agent before building your own.
 
@@ -169,18 +202,27 @@ Tests live in `tests/`. Use mocks for external services:
 
 ```python
 from unittest.mock import MagicMock
+from secure_agents.core.base_provider import CompletionResponse
 
 def test_my_agent():
     mock_provider = MagicMock()
-    mock_provider.complete.return_value = MagicMock(content='{"result": "ok"}')
+    mock_provider.complete.return_value = CompletionResponse(
+        content='{"result": "ok"}', model="test-model"
+    )
 
     mock_tools = {"email_reader": MagicMock(), "document_parser": MagicMock()}
-    agent = MyAgent(tools=mock_tools, provider=mock_provider, config={"poll_interval_seconds": 0})
+    agent = MyAgent(
+        tools=mock_tools,
+        provider=mock_provider,
+        config={"poll_interval_seconds": 0, "validator": {"skip": True}},
+    )
 
     # Test specific methods
     agent._process_something(test_data)
     mock_tools["document_parser"].execute.assert_called_once()
 ```
+
+Set `validator.skip: true` in test configs when you don't want the InputValidator to run during isolated unit tests.
 
 Run tests: `pytest tests/ -v`
 
@@ -190,7 +232,7 @@ Run tests: `pytest tests/ -v`
 
 - Agent names: lowercase alphanumeric + underscores only (e.g., `nda_reviewer`, `contract_analyzer`) -- validated at registration
 - Tool names: `snake_case` (e.g., `email_reader`, `slack_notifier`)
-- Provider names: lowercase (only `ollama` is supported)
+- Provider names: lowercase (e.g., `ollama`, `llamacpp`, `vllm`, `lmstudio`, `localai`, `openai_compat`)
 - Agent directories: `src/secure_agents/agents/<agent_name>/`
 - Tool files: `src/secure_agents/tools/<tool_name>.py`
 - Config keys: `snake_case` throughout YAML

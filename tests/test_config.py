@@ -85,12 +85,36 @@ def test_get_agent_config_missing_returns_defaults():
     assert merged["security"]["max_file_size_mb"] == 50
 
 
-def test_cloud_provider_rejected(tmp_path):
-    """Cloud providers must be rejected at config load time."""
-    config_file = tmp_path / "config.yaml"
-    config_file.write_text("provider:\n  active: anthropic\n")
-    with pytest.raises(ValueError, match="not allowed"):
-        load_config(str(config_file))
+def test_non_local_provider_rejected_by_builder(tmp_path):
+    """Providers without local_only=True must be rejected at build time."""
+    from secure_agents.core.base_provider import BaseProvider, CompletionResponse
+    from secure_agents.core.builder import build_agent
+    from secure_agents.core.registry import registry
+
+    class _FakeCloudProvider(BaseProvider):
+        local_only = False  # explicitly NOT local
+
+        def complete(self, messages, *, model=None, temperature=None,
+                     json_mode=False, response_schema=None):
+            return CompletionResponse(content="", model="fake")
+
+        def is_available(self):
+            return True
+
+    registry.register_provider("fake_cloud", _FakeCloudProvider)
+    try:
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "provider:\n  active: fake_cloud\nagents:\n  nda_reviewer:\n    enabled: true\n"
+        )
+        config = load_config(str(config_file))
+        # Ensure the nda_reviewer agent is discoverable
+        from secure_agents.core.builder import discover_all
+        discover_all()
+        with pytest.raises(ValueError, match="local_only"):
+            build_agent("nda_reviewer", config)
+    finally:
+        registry._providers.pop("fake_cloud", None)
 
 
 def test_invalid_agent_name_rejected(tmp_path):

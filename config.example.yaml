@@ -2,11 +2,15 @@
 # Copy this file to config.yaml and update with your settings.
 #
 # IMPORTANT: Credentials (passwords, API keys) are NEVER stored in this file.
-# They are resolved from: macOS Keychain > environment variables > OAuth2 tokens.
-# Run `secure-agents auth setup` to configure credentials securely.
+# They are resolved from the configured credential backend (see `credentials`
+# section below) and fall back to environment variables as a per-secret
+# override. Run `secure-agents auth setup` to configure credentials securely.
 #
-# SECURITY: Only local LLM inference (Ollama) is supported.
-# No data ever leaves your machine. Cloud providers are not available.
+# SECURITY: Only local LLM inference is supported. Any provider you choose must
+# declare local_only=True; the builder rejects anything else. Supported providers
+# out of the box: ollama, llamacpp, vllm, lmstudio, localai (and the generic
+# openai_compat for any OpenAI-compatible local server). No data leaves your
+# machine.
 
 # ─── Defaults ────────────────────────────────────────────────────────────────
 # Shared fallback values inherited by all agents.
@@ -41,7 +45,10 @@ defaults:
     retention_days: 90
 
 # ─── LLM Provider ──────────────────────────────────────────────────────────
-# Only Ollama (local inference) is supported. No data leaves your machine.
+# Pick whichever local backend you want by setting `active`. Only providers
+# with local_only=True can be used; the builder rejects anything else.
+#
+# Built-in providers: ollama, llamacpp, vllm, lmstudio, localai, openai_compat
 provider:
   active: ollama
 
@@ -49,6 +56,40 @@ provider:
     host: http://localhost:11434
     model: llama3.2
     temperature: 0.1
+
+  # llama.cpp server (./server -m model.gguf)
+  llamacpp:
+    host: http://localhost:8080
+    model: default       # llama.cpp loads its model at server startup
+    temperature: 0.1
+
+  # vLLM (vllm serve <model>)
+  vllm:
+    host: http://localhost:8000
+    model: meta-llama/Llama-3.2-3B-Instruct
+    temperature: 0.1
+
+  # LM Studio local server
+  lmstudio:
+    host: http://localhost:1234
+    model: lmstudio-community/Llama-3.2-3B-Instruct-GGUF
+    temperature: 0.1
+
+  # LocalAI
+  localai:
+    host: http://localhost:8080
+    model: llama-3.2-3b-instruct
+    temperature: 0.1
+
+# ─── Validator LLM ─────────────────────────────────────────────────────────
+# Secondary screening pass over untrusted input (defense layer 2). Set
+# `skip: true` to bypass for an agent (e.g. in tests). The validator uses the
+# active provider unless an `override` is specified here.
+validator:
+  skip: false
+  confidence_threshold: 0.7
+  # override: ollama
+  # model: llama3.2
 
 # ─── Concurrency ────────────────────────────────────────────────────────────
 # Maximum number of agent threads running simultaneously.
@@ -59,6 +100,27 @@ queue:
   db_path: ./data/jobs.db
   max_retries: 3
   retry_delay_seconds: 60
+
+# ─── Credential Backend ──────────────────────────────────────────────────────
+# Where secrets (email passwords, OAuth2 client_secrets, API tokens) live.
+# Environment variables are ALWAYS consulted as a per-secret fallback.
+#
+# Backends:
+#   auto           — macOS Keychain when available, otherwise encrypted file.
+#                    The right default for laptops + VMs out of the box.
+#   keychain       — macOS Keychain only. Fails if not on macOS.
+#   encrypted_file — AES-256-GCM encrypted JSON file under `store_path`,
+#                    unlocked with a master passphrase from
+#                    SECURE_AGENTS_MASTER_KEY or an interactive prompt.
+#                    Recommended for Linux VMs and headless servers.
+#
+# To initialize an encrypted store on a fresh VM:
+#     secure-agents auth init-store
+#     export SECURE_AGENTS_MASTER_KEY='your-strong-passphrase'
+#     secure-agents auth setup
+credentials:
+  backend: auto
+  store_path: ~/.secure-agents/credentials.enc
 
 # ─── Agents ──────────────────────────────────────────────────────────────────
 # Each agent has its own self-contained config section.
@@ -102,3 +164,8 @@ agents:
   #   storage:
   #     output_dir: ./output/contracts   # Separate output directory
   #     retention_days: 365              # Keep for a year
+  #   # Use a different local provider just for this agent:
+  #   provider:
+  #     override: llamacpp               # Any registered local_only provider
+  #     model: default
+  #     temperature: 0.0

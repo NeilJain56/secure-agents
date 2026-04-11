@@ -47,6 +47,8 @@ tools:
       - output
 
 providers:
+  # Every provider in this section MUST be local-only.
+  # The builder enforces local_only=True at runtime.
   ollama:
     homebrew:
       - ollama
@@ -59,29 +61,21 @@ providers:
         default: llama3.2
     credentials: []
 
-  anthropic:
-    pip_extras:
-      - anthropic
-    credentials:
-      - key: anthropic_api_key
-        label: "Anthropic API key (starts with sk-ant-)"
-        hide_input: true
+  llamacpp:
+    # llama.cpp server is started by the user; we just verify it.
+    credentials: []
 
-  openai:
-    pip_extras:
-      - openai
-    credentials:
-      - key: openai_api_key
-        label: "OpenAI API key (starts with sk-)"
-        hide_input: true
+  vllm:
+    # vLLM is started by the user; we just verify it.
+    credentials: []
 
-  gemini:
-    pip_extras:
-      - gemini
-    credentials:
-      - key: gemini_api_key
-        label: "Gemini API key"
-        hide_input: true
+  lmstudio:
+    # LM Studio is started by the user; we just verify it.
+    credentials: []
+
+  localai:
+    # LocalAI is started by the user; we just verify it.
+    credentials: []
 
 # Always created regardless of agent selection
 common:

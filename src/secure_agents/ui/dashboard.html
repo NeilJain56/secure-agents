@@ -1632,7 +1632,7 @@ function renderSetupAction(check, agent) {
       break;
 
     case 'ollama_install': {
-      // Show option to either install Ollama or switch to a cloud provider
+      // Ollama is the easy default — but the user can pick any registered local provider.
       const providerOptions = (agent.available_providers || [])
         .filter(p => p !== 'ollama')
         .map(p => `<option value="${esc(p)}">${esc(p.charAt(0).toUpperCase() + p.slice(1))}</option>`)
@@ -1644,7 +1644,7 @@ function renderSetupAction(check, agent) {
           <div style="margin-top:4px;font-size:11px;color:var(--text-3)">This runs Ollama as a background service &mdash; no terminal needed.</div>
         </div>
         ${providerOptions ? `
-        <div class="setup-instruction" style="margin-bottom:6px">Or switch to a cloud provider instead:</div>
+        <div class="setup-instruction" style="margin-bottom:6px">Or switch to another local provider you already run:</div>
         <div class="setup-action">
           <select class="input" id="provider-${esc(uid)}" style="flex:0 0 auto;width:160px">
             ${providerOptions}
@@ -1667,7 +1667,7 @@ function renderSetupAction(check, agent) {
           <div style="margin-top:4px;font-size:11px;color:var(--text-3)">This runs Ollama in the background. No need to keep a terminal open.</div>
         </div>
         ${providerOptions ? `
-        <div class="setup-instruction" style="margin-bottom:6px">Or switch to a cloud provider:</div>
+        <div class="setup-instruction" style="margin-bottom:6px">Or switch to another local provider you already run:</div>
         <div class="setup-action">
           <select class="input" id="provider-${esc(uid)}" style="flex:0 0 auto;width:160px">
             ${providerOptions}
@@ -1679,12 +1679,12 @@ function renderSetupAction(check, agent) {
     }
 
     case 'provider': {
-      // Cloud provider not reachable - likely needs API key or is wrong provider
+      // Active provider not reachable — let the user pick a different local backend.
       const providerOptions = (agent.available_providers || [])
         .map(p => `<option value="${esc(p)}" ${p === agent.provider ? 'selected' : ''}>${esc(p.charAt(0).toUpperCase() + p.slice(1))}</option>`)
         .join('');
       actionHtml = `
-        <div class="setup-instruction" style="margin-bottom:6px">Switch to a different provider:</div>
+        <div class="setup-instruction" style="margin-bottom:6px">Switch to a different local provider:</div>
         <div class="setup-action">
           <select class="input" id="provider-${esc(uid)}" style="flex:0 0 auto;width:160px">
             ${providerOptions}

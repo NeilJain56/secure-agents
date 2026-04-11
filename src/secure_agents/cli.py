@@ -92,6 +92,19 @@ def main(ctx, config, json_logs):
     discover_all()
     ctx.ensure_object(dict)
     ctx.obj["config_path"] = config
+    # Configure the credential backend from the loaded config so every
+    # subcommand reads/writes secrets from the right place.  We do not
+    # fail here if the config is missing — `secure-agents setup` needs
+    # to run before there is a config file.
+    try:
+        from secure_agents.core.credentials import configure_credentials
+        cfg = load_config(config)
+        configure_credentials(
+            backend=cfg.credentials.backend,
+            store_path=cfg.credentials.store_path,
+        )
+    except Exception:
+        pass
 
 
 @main.command()
@@ -168,10 +181,16 @@ def auth():
 
 @auth.command(name="setup")
 def auth_setup():
-    """Interactively store credentials in the macOS Keychain."""
-    from secure_agents.core.credentials import store_credential
+    """Interactively store credentials in the active credential backend."""
+    from secure_agents.core.credentials import get_active_backend, store_credential
 
-    click.echo("Store credentials securely in the macOS Keychain.")
+    backend = get_active_backend()
+    click.echo(f"Storing credentials in backend: {backend.name}")
+    if backend.name == "encrypted_file":
+        click.echo(
+            "  (You will be prompted for the master passphrase, or set "
+            "SECURE_AGENTS_MASTER_KEY in your environment.)"
+        )
     click.echo("Press Enter to skip any credential you don't need.\n")
 
     pairs = [
@@ -181,11 +200,99 @@ def auth_setup():
         value = click.prompt(f"  {label}", default="", hide_input=True, show_default=False)
         if value:
             if store_credential(key, value):
-                click.echo(f"    Stored '{key}' in Keychain")
+                click.echo(f"    Stored '{key}' in {backend.name}")
             else:
-                click.echo(f"    Failed to store '{key}' - set {key.upper()} env var instead")
+                click.echo(
+                    f"    Failed to store '{key}' in {backend.name}. "
+                    f"Set {key.upper()} env var instead, or run "
+                    f"`secure-agents auth init-store` first."
+                )
 
-    click.echo("\nDone. Credentials are stored in the macOS Keychain under 'secure-agents'.")
+    click.echo(f"\nDone. Credentials are stored via the '{backend.name}' backend.")
+
+
+@auth.command(name="backend")
+@click.pass_context
+def auth_backend(ctx):
+    """Show which credential backend is active and what it can find."""
+    from secure_agents.core.credential_backends import EncryptedFileBackend
+    from secure_agents.core.credentials import get_active_backend
+
+    backend = get_active_backend()
+    click.echo(f"Active backend: {backend.name}")
+    if isinstance(backend, EncryptedFileBackend):
+        click.echo(f"  Store path:    {backend.store_path}")
+        if backend.store_path.exists():
+            mode = backend.store_path.stat().st_mode & 0o777
+            click.echo(f"  Permissions:  {oct(mode)}")
+            try:
+                keys = backend.list_keys()
+                click.echo(f"  Stored keys:  {', '.join(keys) if keys else '(none)'}")
+            except Exception as e:
+                click.echo(f"  Stored keys:  (locked: {e})")
+        else:
+            click.echo("  Store status: not initialized — run `secure-agents auth init-store`")
+
+
+@auth.command(name="init-store")
+@click.option("--store-path", default=None,
+              help="Override the encrypted store path (defaults to credentials.store_path)")
+@click.option("--from-env", is_flag=True,
+              help="Read the master passphrase from SECURE_AGENTS_MASTER_KEY instead of prompting")
+@click.pass_context
+def auth_init_store(ctx, store_path, from_env):
+    """Initialize an encrypted credential store with a fresh master passphrase.
+
+    Use this on Linux VMs and headless servers where the macOS Keychain is not
+    available.  Pick a strong passphrase — anyone with the passphrase AND the
+    encrypted file can read every secret in the store.
+    """
+    import os as _os
+
+    from secure_agents.core.credential_backends import (
+        MASTER_KEY_ENV,
+        MIN_PASSPHRASE_LEN,
+        EncryptedFileBackend,
+    )
+
+    config = load_config(ctx.obj.get("config_path", "config.yaml"))
+    path = store_path or config.credentials.store_path
+    backend = EncryptedFileBackend(path)
+
+    if backend.store_path.exists():
+        raise click.ClickException(
+            f"Refusing to overwrite existing store at {backend.store_path}.  "
+            f"Delete it manually if you really mean to start over."
+        )
+
+    if from_env:
+        passphrase = _os.environ.get(MASTER_KEY_ENV)
+        if not passphrase:
+            raise click.ClickException(
+                f"--from-env requested but {MASTER_KEY_ENV} is not set in the environment."
+            )
+    else:
+        click.echo(
+            f"Initializing encrypted credential store at {backend.store_path}\n"
+            f"Choose a strong passphrase (>= {MIN_PASSPHRASE_LEN} characters)."
+        )
+        passphrase = click.prompt(
+            "Master passphrase", hide_input=True, confirmation_prompt=True,
+        )
+
+    try:
+        ok = backend.initialize(passphrase)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    if not ok:
+        raise click.ClickException(
+            f"Failed to initialize store at {backend.store_path}."
+        )
+    click.echo(f"Encrypted credential store created at {backend.store_path} (mode 0600).")
+    click.echo(
+        f"Tip: export {MASTER_KEY_ENV}=... in your shell or systemd unit "
+        f"to unlock the store non-interactively."
+    )
 
 
 @auth.command(name="gmail")
@@ -311,10 +418,12 @@ def validate(ctx):
 
     # Check provider availability
     if config:
-        active = config.provider.active
+        active = config.active_provider
         try:
             provider_cls = registry.get_provider(active)
-            settings = getattr(config.provider, active)
+            if not getattr(provider_cls, "local_only", False):
+                errors.append(f"Provider '{active}' is not declared local_only=True")
+            settings = config.get_provider_settings(active)
             provider = provider_cls(settings.model_dump())
             if provider.is_available():
                 click.echo(f"[OK] Provider '{active}' is available")
@@ -327,6 +436,27 @@ def validate(ctx):
     click.echo(f"[OK] {len(registry.list_agents())} agent(s) registered")
     click.echo(f"[OK] {len(registry.list_tools())} tool(s) registered")
     click.echo(f"[OK] {len(registry.list_providers())} provider(s) registered")
+
+    # Check credential backend
+    if config:
+        from secure_agents.core.credential_backends import EncryptedFileBackend
+        from secure_agents.core.credentials import get_active_backend
+        backend = get_active_backend()
+        click.echo(f"[OK] Credential backend: {backend.name}")
+        if isinstance(backend, EncryptedFileBackend):
+            if not backend.store_path.exists():
+                warnings.append(
+                    f"Encrypted credential store does not exist at "
+                    f"{backend.store_path}. Run: secure-agents auth init-store"
+                )
+            else:
+                mode = backend.store_path.stat().st_mode & 0o777
+                if mode & 0o077:
+                    errors.append(
+                        f"Encrypted credential store {backend.store_path} has "
+                        f"insecure permissions {oct(mode)}. Run: chmod 600 "
+                        f"{backend.store_path}"
+                    )
 
     # Show configured agents
     if config:

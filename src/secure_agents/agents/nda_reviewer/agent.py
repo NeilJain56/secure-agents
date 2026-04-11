@@ -1,4 +1,17 @@
-"""NDA Reviewer agent - monitors email for NDAs and analyzes them."""
+"""NDA Reviewer agent — monitors email for NDAs and analyzes them.
+
+Security architecture (three-layer defense):
+    1. **Structured output**: The primary LLM call uses ``response_schema`` to
+       constrain output to NDA_REVIEW_SCHEMA.  Even if injected instructions
+       appear in the document, the LLM can only produce schema-valid JSON.
+    2. **Validator LLM**: Before analysis, the document text is screened by a
+       secondary LLM call that classifies it as safe or unsafe.  Unsafe inputs
+       are rejected and audit-logged.
+    3. **Message boundaries**: The document text is placed in its own user-role
+       message tagged ``name="untrusted_document"``, clearly separated from
+       the system prompt.  The LLM sees a structural boundary between trusted
+       instructions and untrusted content.
+"""
 
 from __future__ import annotations
 
@@ -11,9 +24,12 @@ import structlog
 
 from secure_agents.core.base_agent import BaseAgent
 from secure_agents.core.base_provider import Message
+from secure_agents.core.message_builder import MessageBuilder
 from secure_agents.core.registry import register_agent
-from secure_agents.core.security import sanitize_text, AuditLog, cleanup_temp_files
-from secure_agents.agents.nda_reviewer.prompts import SYSTEM_PROMPT, REVIEW_PROMPT_TEMPLATE
+from secure_agents.core.schemas import NDA_REVIEW_SCHEMA, validate_schema
+from secure_agents.core.security import AuditLog, cleanup_temp_files
+from secure_agents.core.validator import InputValidator
+from secure_agents.agents.nda_reviewer.prompts import SYSTEM_PROMPT, REVIEW_INSTRUCTION
 
 logger = structlog.get_logger()
 
@@ -41,12 +57,14 @@ class NDAReviewerAgent(BaseAgent):
 
     name = "nda_reviewer"
     description = "Automated NDA review via email monitoring"
-    version = "0.2.0"
+    version = "0.3.0"
     features = [
         "Monitors inbox for incoming NDA documents",
         "Detects NDAs by filename and content heuristics",
         "Extracts text from PDF and DOCX attachments",
-        "AI-powered clause-by-clause risk analysis",
+        "Validator LLM screens documents for injection attempts",
+        "Schema-constrained AI analysis (structured output)",
+        "API-level isolation of untrusted document content",
         "Generates structured risk reports with scores",
         "Emails findings back to the original sender",
     ]
@@ -56,6 +74,15 @@ class NDAReviewerAgent(BaseAgent):
         self.poll_interval = self.config.get("poll_interval_seconds", 60)
         security = self.config.get("security", {})
         self.audit = AuditLog(security.get("audit_log_path", "./logs/audit.log"))
+
+        # Validator LLM — can use a different (lighter) model if configured
+        validator_cfg = self.config.get("validator", {})
+        self._validator = InputValidator(
+            provider,
+            model=validator_cfg.get("model"),
+            confidence_threshold=validator_cfg.get("confidence_threshold", 0.7),
+        )
+        self._skip_validation = validator_cfg.get("skip", False)
 
     def tick(self) -> None:
         """One iteration: check email, process any NDAs found."""
@@ -105,7 +132,24 @@ class NDAReviewerAgent(BaseAgent):
             logger.info("nda_reviewer.nda_detected", filename=filename)
             self.audit.log("nda_detected", filename=filename, sender=sender)
 
-            # Analyze the NDA
+            # Layer 2: Validator LLM screens the document
+            if not self._skip_validation:
+                verdict = self._validator.check(text)
+                if not verdict.safe:
+                    logger.warning(
+                        "nda_reviewer.validator_rejected",
+                        filename=filename,
+                        reasons=verdict.reasons,
+                    )
+                    self.audit.log(
+                        "validator_rejected",
+                        filename=filename,
+                        reasons=", ".join(verdict.reasons),
+                        confidence=verdict.confidence,
+                    )
+                    continue
+
+            # Layer 1 + 3: Structured output + message boundaries
             review = self._analyze_nda(text, filename)
             if review is None:
                 continue
@@ -117,23 +161,32 @@ class NDAReviewerAgent(BaseAgent):
             self._send_findings(review, filename, sender, subject)
 
     def _analyze_nda(self, text: str, filename: str) -> dict | None:
-        """Run LLM analysis on NDA text."""
-        sanitized_text = sanitize_text(text)
+        """Run LLM analysis on NDA text using structured output + message boundaries."""
 
-        messages = [
-            Message(role="system", content=SYSTEM_PROMPT),
-            Message(role="user", content=REVIEW_PROMPT_TEMPLATE.format(document_text=sanitized_text)),
-        ]
+        # Layer 3: Build messages with API-level isolation
+        builder = MessageBuilder(SYSTEM_PROMPT)
+        builder.add_instruction(REVIEW_INSTRUCTION)
+        builder.add_untrusted("document", text)
+        messages = builder.build()
 
         try:
-            response = self.provider.complete(messages, json_mode=True)
-            review = json.loads(response.content)
-            self.audit.log("nda_analyzed", filename=filename, risk_score=review.get("risk_score"))
-            return review
-        except json.JSONDecodeError:
-            logger.error("nda_reviewer.bad_json", filename=filename)
-            self.audit.log("nda_analysis_failed", filename=filename, reason="invalid_json")
-            return None
+            # Layer 1: Schema-constrained output
+            response = self.provider.complete(
+                messages,
+                response_schema=NDA_REVIEW_SCHEMA,
+            )
+
+            # Validate the response matches the schema (defense in depth —
+            # catches cases where the provider doesn't enforce the schema natively)
+            ok, result = validate_schema(response.content, NDA_REVIEW_SCHEMA)
+            if not ok:
+                logger.error("nda_reviewer.schema_invalid", filename=filename, error=result)
+                self.audit.log("nda_analysis_failed", filename=filename, reason=f"schema_invalid: {result}")
+                return None
+
+            self.audit.log("nda_analyzed", filename=filename, risk_score=result.get("risk_score"))
+            return result
+
         except Exception as e:
             logger.error("nda_reviewer.analysis_error", filename=filename, error=str(e))
             self.audit.log("nda_analysis_failed", filename=filename, reason=str(e))

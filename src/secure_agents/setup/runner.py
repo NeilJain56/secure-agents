@@ -57,9 +57,6 @@ def _check_state(plan: SetupPlan, project_root: Path) -> dict:
     venv_pip = project_root / ".venv" / "bin" / "pip"
     pip_cmd = str(venv_pip) if venv_pip.exists() else "pip"
     check_packages = {
-        "anthropic": "anthropic",
-        "openai": "openai",
-        "gemini": "google-genai",
         "gmail-oauth": "google-auth-oauthlib",
     }
     for extra in plan.pip_extras:

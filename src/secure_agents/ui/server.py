@@ -111,18 +111,21 @@ def _check_agent_health(agent_name: str, config: AppConfig) -> dict:
     merged = config.get_agent_config(agent_name)
     checks = []
 
-    # 1. Check provider (only Ollama)
-    provider_name = "ollama"
+    # 1. Check provider — resolved from config (any local provider allowed)
+    agent_provider_cfg = merged.get("provider", {}) or {}
+    provider_name = agent_provider_cfg.get("override") or config.active_provider
     try:
         provider_cls = registry.get_provider(provider_name)
-        provider_settings = config.provider.ollama
+        provider_settings = config.get_provider_settings(provider_name)
         provider = provider_cls(provider_settings.model_dump())
         if provider.is_available():
-            checks.append({"name": f"Provider ({provider_name})", "status": "ok", "detail": "Connected and ready"})
+            checks.append({"name": f"Provider ({provider_name})", "status": "ok",
+                           "detail": "Connected and ready"})
         else:
-            # Check if Ollama is even installed
-            if shutil.which("ollama"):
-                _ensure_ollama()  # try to start it automatically
+            # Ollama has a known auto-start path; other providers must be
+            # started manually by the user.
+            if provider_name == "ollama" and shutil.which("ollama"):
+                _ensure_ollama()
                 try:
                     started = provider.is_available()
                 except Exception:
@@ -134,10 +137,16 @@ def _check_agent_health(agent_name: str, config: AppConfig) -> dict:
                     checks.append({"name": f"Provider ({provider_name})", "status": "error",
                                    "detail": "Ollama is installed but not responding",
                                    "setup_action": "ollama"})
-            else:
+            elif provider_name == "ollama":
                 checks.append({"name": f"Provider ({provider_name})", "status": "error",
                                "detail": "Ollama is not installed",
                                "setup_action": "ollama_install"})
+            else:
+                checks.append({"name": f"Provider ({provider_name})", "status": "error",
+                               "detail": f"{provider_name} server is not reachable at {provider_settings.host}"})
+    except KeyError:
+        checks.append({"name": f"Provider ({provider_name})", "status": "error",
+                       "detail": f"Provider '{provider_name}' is not registered"})
     except Exception:
         checks.append({"name": f"Provider ({provider_name})", "status": "error",
                        "detail": "Provider check failed"})
@@ -205,6 +214,10 @@ def list_agents():
         email_username = merged.get("email", {}).get("imap", {}).get("username", "")
         auth_method = merged.get("email", {}).get("imap", {}).get("auth_method", "app_password")
 
+        # Resolve which provider this agent actually uses
+        agent_provider_cfg = merged.get("provider", {}) or {}
+        agent_provider_name = agent_provider_cfg.get("override") or config.active_provider
+
         # Pull run stats from metrics snapshot
         snap = metrics.snapshot()
         agent_metrics = snap.get("agents", {}).get(name, {})
@@ -219,11 +232,11 @@ def list_agents():
             "running": is_running,
             "health": health,
             "tools": merged.get("tools", []),
-            "provider": "ollama",
+            "provider": agent_provider_name,
             "poll_interval": merged.get("poll_interval_seconds", 60),
             "email_username": email_username if email_username != "your-email@gmail.com" else "",
             "email_auth_method": auth_method,
-            "available_providers": ["ollama"],
+            "available_providers": registry.list_providers(),
             "last_run_at": agent_metrics.get("last_run_at"),
             "run_count_today": agent_metrics.get("run_count_today", 0),
             "run_count_total": agent_metrics.get("run_count_total", 0),
@@ -491,16 +504,25 @@ async def update_config(req: ConfigUpdateRequest, request: Request):
 
 @app.get("/api/providers")
 def list_providers():
-    """List providers and their availability (Ollama only)."""
+    """List registered local providers and their availability."""
     config = _get_config()
-    try:
-        cls = registry.get_provider("ollama")
-        settings = config.provider.ollama
-        instance = cls(settings.model_dump())
-        available = instance.is_available()
-    except Exception:
-        available = False
-    return {"providers": [{"name": "ollama", "available": available, "active": True}]}
+    active = config.active_provider
+    results = []
+    for name in registry.list_providers():
+        try:
+            cls = registry.get_provider(name)
+            settings = config.get_provider_settings(name)
+            instance = cls(settings.model_dump())
+            available = instance.is_available()
+        except Exception:
+            available = False
+        results.append({
+            "name": name,
+            "available": available,
+            "active": name == active,
+            "local_only": getattr(cls, "local_only", False),
+        })
+    return {"providers": results}
 
 
 @app.get("/api/tools")
@@ -845,7 +867,25 @@ def run_server(config_path: str = "config.yaml", host: str = "127.0.0.1", port: 
     # Bootstrap
     config_path = _ensure_config(config_path)
     _config_path = config_path
-    _ensure_ollama()
+    # Configure credential backend from config (Keychain on Mac, encrypted
+    # file in VMs).  The dashboard runs non-interactively, so we forbid
+    # interactive prompts here — the master passphrase must come from the
+    # SECURE_AGENTS_MASTER_KEY env var when running headless.
+    try:
+        bootstrap_cfg = load_config(config_path)
+        from secure_agents.core.credentials import configure_credentials
+        configure_credentials(
+            backend=bootstrap_cfg.credentials.backend,
+            store_path=bootstrap_cfg.credentials.store_path,
+            interactive=False,
+        )
+        # Auto-start Ollama on bootstrap only when it's the active provider —
+        # other local providers (llama.cpp, vLLM, LM Studio, LocalAI) are
+        # managed by the user.
+        if bootstrap_cfg.active_provider == "ollama":
+            _ensure_ollama()
+    except Exception:
+        pass
     discover_all()
 
     # Initialize persistent metrics store

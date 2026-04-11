@@ -80,14 +80,14 @@ def resolve_plan(
     for name in agent_names:
         merged = config.get_agent_config(name)
         all_tools.update(merged.get("tools", []))
-        prov = merged.get("provider", {}).get("override", config.provider.active)
+        prov = merged.get("provider", {}).get("override", config.active_provider)
         providers.add(prov)
 
     if provider_override:
         providers = {provider_override}
 
     # There should be exactly one active provider for the setup
-    plan.provider_name = provider_override or config.provider.active
+    plan.provider_name = provider_override or config.active_provider
 
     # Resolve email auth method and username from config
     email_cfg = config.defaults.get("email", {}).get("imap", {})

@@ -19,9 +19,9 @@
 
 ## What is Secure Agents?
 
-Secure Agents is a framework for running AI-powered automation workflows **entirely on your own machine**. You define **agents** that orchestrate **tools** (email, document parsing, storage) and a **local LLM** (via [Ollama](https://ollama.com)) — all wired together through config, not code.
+Secure Agents is a framework for running AI-powered automation workflows **entirely on your own machine**. You define **agents** that orchestrate **tools** (email, document parsing, storage) and a **local LLM** — all wired together through config, not code. The provider layer is pluggable: use [Ollama](https://ollama.com), [llama.cpp](https://github.com/ggerganov/llama.cpp), [vLLM](https://github.com/vllm-project/vllm), [LM Studio](https://lmstudio.ai/), [LocalAI](https://localai.io/), or any OpenAI-compatible local server.
 
-**No data ever leaves your machine.** Cloud LLM providers have been deliberately removed from the codebase. Every document, every email, every LLM call stays on your hardware.
+**No data ever leaves your machine.** Every provider must declare `local_only = True`; the builder rejects anything that doesn't. Every document, every email, every LLM call stays on your hardware.
 
 It was built for professionals who handle sensitive data — lawyers, financial analysts, compliance officers — but the framework is general-purpose. Any workflow you can describe, you can automate.
 
@@ -32,8 +32,8 @@ It was built for professionals who handle sensitive data — lawyers, financial 
 | | Cloud AI Platforms | Secure Agents |
 |---|---|---|
 | **Data privacy** | Documents sent to third-party servers | **Documents never leave your machine** |
-| **LLM inference** | Runs on vendor servers | Runs locally via Ollama |
-| **Credentials** | Stored in config files or dashboards | macOS Keychain, never in plaintext |
+| **LLM inference** | Runs on vendor servers | Runs locally via your choice of backend (Ollama, llama.cpp, vLLM, LM Studio, LocalAI) |
+| **Credentials** | Stored in config files or dashboards | macOS Keychain *or* AES-256-GCM encrypted file (Linux/VM), never in plaintext |
 | **Document parsing** | Server-side, you trust the vendor | Sandboxed in Docker — no network, read-only, ephemeral |
 | **Customization** | Vendor lock-in, limited extensibility | Plugin system — add agents/tools with one decorator |
 | **Infrastructure** | Cloud accounts, billing, networking | `bash setup.sh` on a Mac. That's it. |
@@ -51,7 +51,8 @@ bash setup.sh
 # Activate the environment
 source .venv/bin/activate
 
-# Store credentials in macOS Keychain (never in files)
+# Store credentials in the active backend (Keychain on macOS, encrypted file elsewhere)
+# On a Linux VM, run `secure-agents auth init-store` once first.
 secure-agents auth setup
 
 # Edit config with your email settings
@@ -70,9 +71,9 @@ secure-agents ui
 
 ### Requirements
 
-- **macOS** (Keychain integration; Linux support planned)
+- **macOS or Linux** — macOS uses the Keychain automatically; Linux/headless servers use the encrypted file backend (initialize once with `secure-agents auth init-store`)
 - **Python 3.11+**
-- **Ollama** (local LLM inference; installed by `setup.sh`)
+- A local LLM backend — Ollama (installed by `setup.sh`), or any of: llama.cpp server, vLLM, LM Studio, LocalAI
 - **Docker** (required — sandbox is enabled by default)
 
 ---
@@ -83,7 +84,7 @@ This framework was designed from the ground up to be **secure by default**. Ever
 
 ### 1. Zero data egress — enforced, not configurable
 
-Cloud LLM providers (Anthropic, OpenAI, Gemini) have been **removed from the codebase**. Not disabled — deleted. There is no config option to send data to an external API. All LLM inference runs locally via Ollama.
+Cloud LLM providers (Anthropic, OpenAI, Gemini) have been **removed from the codebase**. Not disabled — deleted. There is no config option to send data to an external API. Every provider class must declare `local_only = True` and the builder raises `ValueError` at startup if it doesn't. The `openai_compat` provider additionally rejects non-local hostnames at config time. You can plug in any local backend — Ollama, llama.cpp, vLLM, LM Studio, LocalAI — but cloud egress is structurally impossible.
 
 ### 2. Sandboxed document parsing (enabled by default)
 
@@ -97,11 +98,34 @@ If Docker is missing and sandbox is enabled, the framework **refuses to parse** 
 
 ### 3. Credentials never touch disk in plaintext
 
-Passwords and API keys are **never stored in config files**. The credential resolution chain:
+Passwords and API keys are **never stored in config files**. The credential layer is a pluggable backend chosen via `credentials.backend` in `config.yaml`:
 
-1. **macOS Keychain** — encrypted by the OS, locked to your user account
-2. **Environment variables** — for CI/CD or containers
-3. **OAuth2 tokens** — access/refresh tokens stored with `0600` permissions; the OAuth2 `client_secret` is stored in the Keychain, never on disk
+| Backend | Where it stores secrets | When to use |
+|---------|------------------------|-------------|
+| `auto` *(default)* | macOS Keychain when available, otherwise the encrypted file backend | Sensible default everywhere |
+| `keychain` | macOS Keychain — encrypted by the OS, locked to your user account | macOS laptops/workstations |
+| `encrypted_file` | AES-256-GCM encrypted JSON store at `~/.secure-agents/credentials.enc` (mode `0600`), key derived from a master passphrase via scrypt | **Linux VMs and headless servers** — strictly more secure than env vars |
+
+The encrypted file backend:
+- Uses **AES-256-GCM** authenticated encryption (any tampering is detected)
+- Derives the data key with **scrypt** (`N=2^15, r=8, p=1`) — slow to brute-force
+- Reads the master passphrase from `SECURE_AGENTS_MASTER_KEY` or an interactive `getpass` prompt — never from a file
+- **Refuses to load** if the store has world- or group-readable permissions
+- **Fails closed** on a wrong passphrase: cached key is dropped, no plaintext is leaked
+- Uses **atomic writes** (`tempfile` + `os.replace`) so the store can never be corrupted mid-write
+
+In addition to the configured backend, **environment variables are always consulted as a per-secret fallback**, so `EMAIL_PASSWORD=... secure-agents start ...` still works for one-off overrides without re-running setup.
+
+OAuth2 tokens (access + refresh) are stored under `~/.secure-agents/tokens/` with `0600` permissions; the OAuth2 `client_secret` lives in the configured credential backend, **never** on disk.
+
+To bring up an encrypted store on a Linux VM:
+
+```bash
+secure-agents auth init-store                    # prompts for master passphrase
+export SECURE_AGENTS_MASTER_KEY='strong-passphrase'   # or set it in your systemd unit
+secure-agents auth setup                          # store individual credentials
+secure-agents auth backend                        # confirm what's active and stored
+```
 
 ### 4. Native Gmail OAuth2
 
@@ -120,12 +144,13 @@ Every file is validated before any parsing library touches it:
 - Path traversal prevention
 - Filename sanitization (alphanumeric, dots, hyphens, underscores only; max 255 chars)
 
-### 6. Input sanitization (20+ patterns)
+### 6. Three-layer prompt injection defense
 
-All document text is sanitized before reaching the LLM. The sanitizer:
-- Detects **20+ prompt injection patterns** (instruction overrides, role switching, system prompt extraction, data exfiltration attempts)
-- Applies **Unicode normalization** (NFKC) to prevent homoglyph-based bypasses
-- Logs detection events to the audit trail
+Regex-based input scrubbing was deleted in favor of a structural defense that does not depend on enumerating attack patterns:
+
+1. **Structured outputs** — Every LLM call sends a JSON Schema (`response_schema=...`) that constrains the model to a specific shape. Each provider forwards this to its native mechanism (Ollama's `format`, llama.cpp's `json_schema` GBNF, OpenAI-compatible `response_format`). Returned JSON is also re-validated as defense in depth.
+2. **Validator LLM** — A second, smaller model screens untrusted text *before* it reaches the primary agent and returns a `{verdict, confidence, reasons}` object against `VALIDATOR_VERDICT_SCHEMA`. It fails closed: any LLM error, schema mismatch, or below-threshold confidence is treated as unsafe and the document is rejected.
+3. **API-level message boundaries** — Untrusted document text is placed in a separate `Message` with `role="user"`, `name="untrusted_<label>"`, and `=== BEGIN UNTRUSTED CONTENT ===` markers. The system prompt never contains user-controlled text, so embedded instructions cannot rewrite the agent's directives.
 
 ### 7. Path traversal protection
 
@@ -172,16 +197,17 @@ The web dashboard:
                     config.yaml
                         |
                    +---------+
-                   | Builder |  (discovers & wires components)
+                   | Builder |  (discovers & wires components, enforces local_only)
                    +---------+
                    /    |    \
             +-------+ +------+ +----------+
             | Agent | | Tool | | Provider |
             +-------+ +------+ +----------+
                |         |          |
-          tick() loop  execute()  complete()
+          tick() loop  execute()  complete(messages, response_schema=...)
                                      |
-                              Ollama (local)
+                       any local backend with local_only=True:
+                       ollama | llamacpp | vllm | lmstudio | localai
 ```
 
 ### Agents
@@ -199,13 +225,20 @@ Reusable capabilities shared across agents. Declare which tools an agent needs i
 | `document_parser` | Extract text from PDF/DOCX (sandboxed via Docker) |
 | `file_storage` | Save and load JSON reports locally (path-traversal protected) |
 
-### Provider
+### Providers
 
-Only **Ollama** (local inference) is supported. No data leaves your machine.
+Pluggable local backends. Pick whichever runs best on your hardware. Every provider declares `local_only = True`.
 
-| Provider | Type | Default Model |
-|----------|------|---------------|
-| `ollama` | Local | `llama3.2` |
+| Provider | Backend | Notes |
+|----------|---------|-------|
+| `ollama` | [Ollama](https://ollama.com) | Native `format` JSON Schema support |
+| `llamacpp` | [llama.cpp server](https://github.com/ggerganov/llama.cpp) | `json_schema` GBNF grammar at `/completion` |
+| `vllm` | [vLLM](https://github.com/vllm-project/vllm) | OpenAI-compatible `response_format` |
+| `lmstudio` | [LM Studio](https://lmstudio.ai/) | OpenAI-compatible `response_format` |
+| `localai` | [LocalAI](https://localai.io/) | OpenAI-compatible `response_format` |
+| `openai_compat` | Any local OpenAI-compatible server | Hostname must resolve to a private/loopback address |
+
+Adding another local backend is one file: implement `complete(messages, *, response_schema, ...)` and `is_available()`, set `local_only = True`, decorate with `@register_provider("name")`.
 
 ### Plugin System
 
@@ -329,12 +362,18 @@ This file is checked into the repo. Keep it updated as you add new tools or chan
 `config.yaml` uses a **defaults + per-agent override** model:
 
 ```yaml
-# Only Ollama (local) is supported — no cloud providers
+# Pick any local provider — every backend must declare local_only=True
 provider:
-  active: ollama
+  active: ollama         # or: llamacpp, vllm, lmstudio, localai
   ollama:
     host: http://localhost:11434
     model: llama3.2
+  llamacpp:
+    host: http://localhost:8080
+    model: default
+  vllm:
+    host: http://localhost:8000
+    model: meta-llama/Llama-3.2-3B-Instruct
 
 # Shared defaults — every agent inherits these
 defaults:
@@ -371,10 +410,12 @@ Two agents can have entirely different file size limits, output directories, or 
 | Command | Description |
 |---------|-------------|
 | `secure-agents start [agents...]` | Start one, several, or all enabled agents |
-| `secure-agents list` | List registered agents, tools, and provider |
-| `secure-agents validate` | Check config, Ollama, Docker, credentials |
-| `secure-agents auth setup` | Store credentials in macOS Keychain |
-| `secure-agents auth gmail <secrets.json>` | Set up Gmail OAuth2 |
+| `secure-agents list` | List registered agents, tools, and providers |
+| `secure-agents validate` | Check config, the active provider, Docker, credentials |
+| `secure-agents auth init-store` | Create an encrypted credential store (Linux VMs / headless) |
+| `secure-agents auth backend` | Show the active credential backend and what it has stored |
+| `secure-agents auth setup` | Store credentials in the active backend |
+| `secure-agents auth gmail <secrets.json>` | Set up Gmail OAuth2 (client_secret stored in the backend, not on disk) |
 | `secure-agents setup [agents...]` | Guided setup wizard |
 | `secure-agents ui` | Launch the web dashboard (localhost only) |
 
@@ -403,14 +444,20 @@ src/secure_agents/
     base_provider.py    BaseProvider ABC (the provider contract)
     registry.py         Plugin registry and @register_* decorators
     config.py           Config loading, validation, env var interpolation
-    credentials.py      Keychain / env var / OAuth2 credential resolution
-    security.py         File validation (magic bytes), input sanitization, audit log
+    credential_backends.py  Pluggable backends: Keychain, EncryptedFile (AES-GCM + scrypt), Env
+    credentials.py      Thin facade over the active backend + OAuth2 helpers
+    security.py         File validation (magic bytes), filename/path safety, audit log
+    schemas.py          JSON schemas + lightweight validator for structured outputs
+    validator.py        InputValidator: secondary LLM that fails closed on unsafe input
+    message_builder.py  Keeps untrusted text in tagged, separate Messages
     sandbox.py          Docker-only sandboxed execution (no fallback)
     job_queue.py        SQLite-backed job queue with retry and dead-letter
-    builder.py          Discovers all plugins and wires agents at startup
+    builder.py          Discovers all plugins, wires agents, enforces local_only
 
-  providers/        # LLM backend (local only)
-    ollama.py           Local inference via Ollama
+  providers/        # LLM backends (every one declares local_only=True)
+    ollama.py           Ollama (native format JSON Schema)
+    llamacpp.py         llama.cpp server (json_schema GBNF)
+    openai_compat.py    vLLM / LM Studio / LocalAI / generic openai_compat
 
   tools/            # Reusable capabilities (shared across agents)
     email_reader.py     IMAP inbox monitor (SSL enforced)
@@ -436,10 +483,10 @@ src/secure_agents/
 # Install in development mode
 pip install -e ".[dev]"
 
-# Run tests (59 tests including security suite)
+# Run tests
 pytest tests/ -v
 
-# Validate config, Ollama, Docker
+# Validate config, active provider, Docker
 secure-agents validate
 
 # List all registered components

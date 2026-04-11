@@ -1,6 +1,13 @@
-"""Ollama provider - local LLM inference via Ollama HTTP API."""
+"""Ollama provider — local LLM inference via the Ollama HTTP API.
+
+Supports structured output via ``response_schema``: when a JSON Schema is
+provided, it is passed to Ollama's ``format`` parameter so the model's
+output is grammar-constrained to match the schema.
+"""
 
 from __future__ import annotations
+
+from typing import Any
 
 import httpx
 import structlog
@@ -13,7 +20,15 @@ logger = structlog.get_logger()
 
 @register_provider("ollama")
 class OllamaProvider(BaseProvider):
-    """Local LLM provider using Ollama (https://ollama.com)."""
+    """Local LLM provider using Ollama (https://ollama.com).
+
+    Ollama >= 0.5 supports ``format: <json-schema>`` to constrain the model
+    output to a specific JSON schema.  When ``response_schema`` is supplied,
+    this provider uses that mechanism.  When only ``json_mode=True`` is set
+    (no schema), it falls back to ``format: "json"``.
+    """
+
+    local_only = True
 
     def __init__(self, config: dict) -> None:
         super().__init__(config)
@@ -24,20 +39,29 @@ class OllamaProvider(BaseProvider):
     def complete(
         self,
         messages: list[Message],
+        *,
         model: str | None = None,
         temperature: float | None = None,
         json_mode: bool = False,
+        response_schema: dict[str, Any] | None = None,
     ) -> CompletionResponse:
         model = self.get_model(model)
         temp = self.get_temperature(temperature)
 
         payload: dict = {
             "model": model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": [
+                {"role": m.role, "content": m.content}
+                for m in messages
+            ],
             "stream": False,
             "options": {"temperature": temp},
         }
-        if json_mode:
+
+        # Structured output: schema takes precedence over plain json_mode
+        if response_schema is not None:
+            payload["format"] = response_schema
+        elif json_mode:
             payload["format"] = "json"
 
         response = httpx.post(

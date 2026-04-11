@@ -2,38 +2,62 @@
 
 Common issues and how to resolve them.
 
-## Ollama Not Running / Not Installed
+## Local LLM Backend Not Reachable
 
-**Symptoms:** Provider health check fails. Error messages like "Ollama is not installed" or "Ollama is not responding."
+**Symptoms:** Provider health check fails. Error messages like "is not responding" or `is_available()` returns `False` for the active provider.
 
-**Fix (not installed):**
+The framework supports several local backends — pick the one matching your `provider.active`.
+
+### Ollama
+
 ```bash
+# Install:
 brew install ollama
-ollama serve
-ollama pull llama3.2
-```
-
-**Fix (installed but not running):**
-```bash
-# Start as a background service (preferred):
+# Start (one of):
 brew services start ollama
-
-# Or start manually:
 ollama serve
-```
-
-**Fix (running but model not pulled):**
-```bash
+# Pull the model named in config.yaml under provider.ollama.model:
 ollama pull llama3.2
-# Or whatever model is in your config.yaml under provider.ollama.model
-```
-
-**Verify it works:**
-```bash
+# Verify:
 curl http://localhost:11434/api/tags
 ```
 
-The dashboard and `secure-agents setup` will attempt to start Ollama automatically if it is installed but not running.
+The dashboard and `secure-agents setup` will attempt to start Ollama automatically if it's installed but not running. (This auto-start convenience is Ollama-specific.)
+
+### llama.cpp server
+
+```bash
+./server -m /path/to/model.gguf -c 4096 --host 127.0.0.1 --port 8080
+curl http://localhost:8080/health
+```
+
+The provider hits `/health` and `/completion` with the `json_schema` field for structured outputs.
+
+### vLLM
+
+```bash
+vllm serve meta-llama/Llama-3.2-3B-Instruct --host 127.0.0.1 --port 8000
+curl http://localhost:8000/v1/models
+```
+
+### LM Studio
+
+Open LM Studio → Local Server → Start Server. Default host `http://localhost:1234`.
+
+### LocalAI
+
+```bash
+docker run -p 8080:8080 localai/localai
+curl http://localhost:8080/v1/models
+```
+
+### "Provider is not declared local_only=True"
+
+You set `provider.active` to a provider class that does not declare `local_only = True`. Either pick a built-in provider or add `local_only = True` to your custom provider class. The builder enforces this — there is no override.
+
+### "openai_compat host looks remote"
+
+The `openai_compat` provider rejects any hostname that doesn't resolve to a loopback or RFC1918 address. Point it at a localhost server (or use `.local`/`.internal` for known-private LANs).
 
 ## Email Authentication Failures
 
@@ -44,7 +68,7 @@ The dashboard and `secure-agents setup` will attempt to start Ollama automatical
 **Common causes:**
 - Using your regular Gmail password instead of an App Password.
 - Gmail requires a 16-character App Password when 2FA is enabled.
-- The credential is not stored in Keychain or environment.
+- The credential is not stored in the active credential backend or environment.
 
 **Fix:**
 1. Go to https://myaccount.google.com/apppasswords (requires 2FA enabled).
@@ -203,6 +227,81 @@ secure-agents ui --no-browser
 
 5. **Environment variable not set:** If config uses `${VAR}` and the variable is not set, the literal string `${VAR}` is kept. Use `${VAR:default}` to provide a fallback.
 
+## Credential Backend Issues
+
+The framework supports two credential backends: `keychain` (macOS only) and `encrypted_file` (works on any OS, recommended for Linux VMs and headless servers). The active backend is selected by `credentials.backend` in `config.yaml` (`auto`, `keychain`, or `encrypted_file`). Run `secure-agents auth backend` to see which backend is active and what it has stored.
+
+### Encrypted store does not exist
+
+**Symptoms:** `secure-agents validate` warns "Encrypted credential store does not exist", or `auth setup` reports "Failed to store ... in encrypted_file".
+
+**Fix:** Initialize the store once:
+```bash
+secure-agents auth init-store
+# (prompts for a master passphrase, asks for confirmation)
+```
+Then export the passphrase so the framework can unlock it non-interactively:
+```bash
+export SECURE_AGENTS_MASTER_KEY='your-strong-passphrase'
+```
+For long-running services, set this in your systemd unit (`Environment=SECURE_AGENTS_MASTER_KEY=...`) or shell profile. **Do not** put the passphrase in `config.yaml` — that would defeat the entire backend.
+
+### "Refusing to load: insecure permissions"
+
+**Symptoms:** `MasterKeyError: Refusing to load ~/.secure-agents/credentials.enc: insecure permissions 0o644`.
+
+**Cause:** The encrypted store has world- or group-readable permissions. The backend refuses to read it as a hard error rather than silently leaking ciphertext to other accounts.
+
+**Fix:**
+```bash
+chmod 600 ~/.secure-agents/credentials.enc
+```
+The backend writes the file as `0600` on every save; the only way to get into this state is an external `chmod`, an unfriendly umask, or a copy from another machine.
+
+### Wrong master passphrase
+
+**Symptoms:** `get_credential()` keeps returning `None`, or `auth backend` reports "(locked: wrong master passphrase)".
+
+**Cause:** AES-GCM tag verification failed because the key derived from your passphrase doesn't match. The backend fails closed: it clears the cached key so the next attempt can re-prompt.
+
+**Fix:** Re-export `SECURE_AGENTS_MASTER_KEY` with the correct value, or run an interactive command (e.g. `secure-agents auth setup`) to be prompted again. If you have truly forgotten the passphrase, the encrypted store is unrecoverable — delete `~/.secure-agents/credentials.enc` and re-run `auth init-store` followed by `auth setup`.
+
+### Headless server: prompt hangs
+
+**Symptoms:** A non-interactive process (systemd, cron, dashboard) blocks forever the first time it tries to read a credential.
+
+**Cause:** The encrypted file backend tries to fall back to a `getpass()` prompt when no `SECURE_AGENTS_MASTER_KEY` is set. With no TTY, this would hang — so the dashboard / non-interactive callers pass `interactive=False` and the backend raises `MasterKeyError` instead.
+
+**Fix:** Always set `SECURE_AGENTS_MASTER_KEY` in the service environment. Verify with:
+```bash
+systemctl show your-service | grep SECURE_AGENTS_MASTER_KEY
+```
+
+### Tampered ciphertext
+
+**Symptoms:** A previously-working store suddenly returns `None` for every credential and logs `credentials.encrypted_file_decrypt_failed`.
+
+**Cause:** AES-GCM tag verification failed — the file was modified outside this tool. This is a feature, not a bug: any in-place edit (manual JSON tweak, partial restore from backup, disk corruption) will be detected.
+
+**Fix:** Restore the file from a known-good backup, or re-initialize:
+```bash
+rm ~/.secure-agents/credentials.enc
+secure-agents auth init-store
+secure-agents auth setup
+```
+
+### Switching from Keychain to encrypted file
+
+If you're moving from a Mac to a Linux VM, secrets do not migrate automatically. On the new host:
+
+```bash
+secure-agents auth init-store
+export SECURE_AGENTS_MASTER_KEY='your-strong-passphrase'
+secure-agents auth setup    # re-enter your credentials interactively
+```
+
+Set `credentials.backend: encrypted_file` in the new host's `config.yaml` (or leave it at `auto` — it picks `encrypted_file` automatically when Keychain is not available).
+
 ## Reading Audit Logs
 
 Audit logs are stored at the path configured in `security.audit_log_path` (default: `./logs/audit.log`). Each line is a JSON object:
@@ -252,10 +351,11 @@ secure-agents validate
 
 It checks:
 - Config file exists and parses correctly
-- Ollama is reachable (the only supported provider -- no cloud providers)
+- The active local provider is reachable (Ollama, llama.cpp, vLLM, LM Studio, LocalAI, etc.)
 - All registered agents, tools, and providers are listed
 - Configured agents are shown with enabled/disabled status
 - Docker availability (required -- sandbox is enabled by default)
 - Agent name validity (lowercase alphanumeric + underscores only)
+- Credential backend is selected and (for `encrypted_file`) the store exists with `0600` permissions
 
 Use this as a first step when anything is not working.

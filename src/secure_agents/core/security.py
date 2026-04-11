@@ -1,16 +1,31 @@
-"""Security utilities: file validation, input sanitization, and audit logging.
+"""Security utilities: file validation, filename sanitization, and audit logging.
 
-All security functions operate locally. Audit logs record metadata only,
-never document content or PII.
+Prompt-injection defense has been moved to a three-layer architecture:
+
+    1. **Structured outputs** (``schemas.py``) — JSON-Schema-constrained LLM
+       responses.  The primary defense: even if injection succeeds, the output
+       shape is locked.
+    2. **Validator LLM** (``validator.py``) — a secondary LLM call that screens
+       untrusted input before it reaches the primary agent LLM.
+    3. **Message boundaries** (``message_builder.py``) — API-level isolation
+       that keeps untrusted content in clearly labelled user-role messages,
+       separated from system instructions.
+
+The old regex-based ``sanitize_text()`` function has been removed.  Regex
+patterns are too easy to bypass (encoding tricks, homoglyphs, paraphrasing)
+and too easy to over-match (flagging legitimate legal text).  The new
+architecture defends at the *structural* level rather than trying to
+pattern-match attack strings.
+
+This module retains file-level security (magic-byte validation, path
+containment, filename sanitization) and the audit log.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
-import re
 import time
-import unicodedata
 from pathlib import Path
 
 import structlog
@@ -24,44 +39,6 @@ _MAGIC_SIGNATURES: dict[str, list[bytes]] = {
     ".docx": [b"PK\x03\x04", b"PK\x05\x06"],  # ZIP format (OOXML)
     ".doc": [b"\xd0\xcf\x11\xe0"],              # OLE2 compound document
 }
-
-# ── Prompt injection patterns (defense-in-depth) ─────────────────────────────
-# This is a secondary filter. The system prompt hierarchy is the primary defense.
-# These patterns are stripped from document text before it reaches the LLM.
-
-_INJECTION_PATTERNS = [
-    # Instruction override attempts
-    re.compile(r"ignore\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions|prompts|context)", re.IGNORECASE),
-    re.compile(r"disregard\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions|prompts|context)", re.IGNORECASE),
-    re.compile(r"forget\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions|prompts|context)", re.IGNORECASE),
-    re.compile(r"override\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions|prompts|context)", re.IGNORECASE),
-    re.compile(r"do\s+not\s+follow\s+(previous|prior|above|earlier)\s+(instructions|prompts)", re.IGNORECASE),
-    re.compile(r"stop\s+being\s+an?\s+", re.IGNORECASE),
-
-    # Role switching / identity manipulation
-    re.compile(r"you\s+are\s+now\s+(?:a|an)\s+", re.IGNORECASE),
-    re.compile(r"act\s+as\s+(?:a|an|if)\s+", re.IGNORECASE),
-    re.compile(r"pretend\s+(?:you(?:'re|\s+are)\s+|to\s+be\s+)", re.IGNORECASE),
-    re.compile(r"from\s+now\s+on\s*,?\s*you", re.IGNORECASE),
-    re.compile(r"new\s+instructions?\s*:", re.IGNORECASE),
-    re.compile(r"updated?\s+instructions?\s*:", re.IGNORECASE),
-
-    # System prompt injection
-    re.compile(r"system\s*:\s*", re.IGNORECASE),
-    re.compile(r"<\s*/?system\s*>", re.IGNORECASE),
-    re.compile(r"\[system\]", re.IGNORECASE),
-    re.compile(r"\[INST\]", re.IGNORECASE),
-    re.compile(r"<<\s*SYS\s*>>", re.IGNORECASE),
-
-    # Data exfiltration attempts
-    re.compile(r"(output|print|show|reveal|display)\s+(the\s+)?(system\s+prompt|instructions|configuration)", re.IGNORECASE),
-    re.compile(r"what\s+(are|were)\s+your\s+(original\s+)?(instructions|prompts)", re.IGNORECASE),
-
-    # Encoded/obfuscated injection attempts
-    re.compile(r"base64\s*:", re.IGNORECASE),
-    re.compile(r"eval\s*\(", re.IGNORECASE),
-    re.compile(r"exec\s*\(", re.IGNORECASE),
-]
 
 
 def validate_file(
@@ -78,7 +55,7 @@ def validate_file(
     4. Magic bytes match the claimed file type
 
     Returns:
-        (is_valid, reason) - True if the file passes all checks.
+        (is_valid, reason) — True if the file passes all checks.
     """
     path = Path(path)
     allowed = allowed_types or [".pdf", ".docx", ".doc"]
@@ -130,33 +107,6 @@ def file_hash(path: str | Path) -> str:
     return h.hexdigest()
 
 
-def sanitize_text(text: str) -> str:
-    """Remove potential prompt injection patterns from document text.
-
-    This is a defense-in-depth measure. The system prompt hierarchy is the
-    primary defense; sanitization is a secondary filter.
-
-    Steps:
-    1. Normalize Unicode to prevent homoglyph-based bypasses
-    2. Strip known injection patterns
-    3. Log when injections are detected (audit trail)
-    """
-    # Normalize Unicode to catch homoglyph/lookalike bypasses
-    sanitized = unicodedata.normalize("NFKC", text)
-
-    injection_count = 0
-    for pattern in _INJECTION_PATTERNS:
-        sanitized, n = pattern.subn("[FILTERED]", sanitized)
-        injection_count += n
-
-    if injection_count > 0:
-        logger.warning("security.injection_filtered",
-                      patterns_matched=injection_count,
-                      text_length=len(text))
-
-    return sanitized
-
-
 def sanitize_filename(filename: str, max_length: int = 255) -> str:
     """Sanitize a filename to prevent path traversal and other attacks.
 
@@ -168,19 +118,11 @@ def sanitize_filename(filename: str, max_length: int = 255) -> str:
     Returns:
         Sanitized filename, or "unnamed" if the result would be empty.
     """
-    # Strip to safe characters only
     safe = "".join(c for c in filename if c.isalnum() or c in ".-_")
-
-    # Enforce max length
     safe = safe[:max_length]
-
-    # Prevent leading dots (hidden files / directory traversal)
     safe = safe.lstrip(".")
-
-    # Prevent empty filenames
     if not safe:
         safe = "unnamed"
-
     return safe
 
 
@@ -199,7 +141,7 @@ def validate_path_within(path: Path, root: Path) -> bool:
 
 
 class AuditLog:
-    """Append-only audit trail. Logs metadata only, never document content."""
+    """Append-only audit trail.  Logs metadata only, never document content."""
 
     def __init__(self, log_path: str | Path = "./logs/audit.log") -> None:
         self.log_path = Path(log_path)
@@ -214,11 +156,12 @@ class AuditLog:
         }
         with open(self.log_path, "a") as f:
             f.write(json.dumps(entry) + "\n")
-        logger.info("audit.event", audit_event=event, **{k: v for k, v in metadata.items() if k != "timestamp"})
+        logger.info("audit.event", audit_event=event,
+                    **{k: v for k, v in metadata.items() if k != "timestamp"})
 
 
 def cleanup_temp_files(temp_dir: str | Path) -> int:
-    """Remove all files in the temp directory. Returns count of files removed."""
+    """Remove all files in the temp directory.  Returns count of files removed."""
     temp_dir = Path(temp_dir)
     if not temp_dir.exists():
         return 0
