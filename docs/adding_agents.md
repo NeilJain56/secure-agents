@@ -40,8 +40,8 @@ class YourAgent(BaseAgent):
     name = "your_agent"
     description = "Describe what your agent does"
 
-    def __init__(self, tools, provider, config=None):
-        super().__init__(tools, provider, config)
+    def __init__(self, tools, provider, config=None, **kwargs):
+        super().__init__(tools, provider, config, **kwargs)
         self.poll_interval = self.config.get("poll_interval_seconds", 60)
         validator_cfg = (self.config.get("validator") or {})
         self._validator = None if validator_cfg.get("skip") else InputValidator(
@@ -142,6 +142,30 @@ Pluggable local LLM backends. Cloud providers (Anthropic, OpenAI, Gemini) have b
 
 The global provider is set via `provider.active`. An agent can pick a different provider just for itself via `agents.<name>.provider.override` (with optional `model`, `temperature`, `host`).
 
+## Multi-Agent Sequencing
+
+Agents can hand off work to other agents via a shared job queue. The builder automatically passes a `JobQueue` instance to every agent — you never create one yourself. Call `self.emit()` to enqueue a job for another agent:
+
+```python
+# In your agent's tick() method:
+
+# Sequential handoff: pass the result to agent B
+self.emit("agent_b", {"document": "nda.pdf", "risk_score": 7})
+
+# Parallel fan-out: notify both B and C
+self.emit("summarizer", {"text": extracted_text})
+self.emit("archiver", {"file": filepath})
+```
+
+Rules:
+- **Always use `self.emit()`** — never call `self.job_queue.enqueue()` directly. `emit()` adds logging and handles the `None` queue case as a silent no-op.
+- **Accept `**kwargs` in `__init__`** and pass them through to `super().__init__()` so the `job_queue` keyword is forwarded:
+  ```python
+  def __init__(self, tools, provider, config=None, **kwargs):
+      super().__init__(tools, provider, config, **kwargs)
+  ```
+- Consuming agents use `self.job_queue.dequeue(self.name)` to pull pending jobs.
+
 ## Tips
 
 - **Keep agents thin** - Put workflow logic in `tick()`, delegate I/O to tools
@@ -151,6 +175,7 @@ The global provider is set via `provider.active`. An agent can pick a different 
 - **Always pass `response_schema`** - Structured outputs are the first layer of injection defense; never make a free-form `complete()` call
 - **Use `MessageBuilder` for untrusted text** - Never concatenate document content into a system prompt
 - **Run untrusted text through `InputValidator`** - It fails closed; treat any non-`safe` verdict as a hard reject
+- **Use `self.emit()` to hand off work** - Never call `self.job_queue.enqueue()` directly; `emit()` is a safe no-op when no queue is wired
 - **Log metadata only** - Never log document content or PII
 - **Override only what you need** - Your agent inherits all defaults; only specify what's different
 - **Agent names must be valid** - Lowercase alphanumeric characters and underscores only

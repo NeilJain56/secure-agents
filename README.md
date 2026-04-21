@@ -199,20 +199,26 @@ The web dashboard:
                    +---------+
                    | Builder |  (discovers & wires components, enforces local_only)
                    +---------+
-                   /    |    \
-            +-------+ +------+ +----------+
-            | Agent | | Tool | | Provider |
-            +-------+ +------+ +----------+
-               |         |          |
-          tick() loop  execute()  complete(messages, response_schema=...)
-                                     |
-                       any local backend with local_only=True:
-                       ollama | llamacpp | vllm | lmstudio | localai
+                  / |    |    \
+          +-------+ +------+ +----------+ +----------+
+          | Agent | | Tool | | Provider | | JobQueue |
+          +-------+ +------+ +----------+ +----------+
+             |         |          |             |
+        tick() loop  execute()  complete()  emit() → enqueue()
+             |                    |
+        self.emit()    any local backend with local_only=True:
+        (hand off)     ollama | llamacpp | vllm | lmstudio | localai
 ```
 
 ### Agents
 
 Workflow orchestrators. Each agent defines *what* to do by composing tools and the LLM provider. Agents are thin — they never implement I/O directly. Adding a new agent is one file and one decorator.
+
+Agents can **hand off work to other agents** via a shared SQLite-backed job queue. Call `self.emit("other_agent", {...})` in your `tick()` method — the payload appears as a pending job for the target agent. Common patterns:
+
+- **Sequential handoff:** Agent A reviews a document, then emits to Agent B for notification.
+- **Parallel fan-out:** Agent A emits to both Agent B (summarize) and Agent C (archive) in one tick.
+- **Orchestrator:** A central agent routes work to different downstream agents based on a state flag.
 
 ### Tools
 

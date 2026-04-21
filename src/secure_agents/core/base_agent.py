@@ -2,6 +2,15 @@
 
 Agents are thin orchestrators that compose tools and a provider to accomplish
 a workflow. They contain only business logic, never direct I/O.
+
+Multi-agent sequencing
+~~~~~~~~~~~~~~~~~~~~~~
+Agents can hand work to other agents via the shared :class:`JobQueue`.
+The builder passes a single ``job_queue`` instance to every agent it
+creates; agents call :meth:`emit` to enqueue a job for another agent.
+Never call ``self.job_queue.enqueue()`` directly — always use
+:meth:`emit` so the "no queue" case is handled as a silent no-op and
+the hand-off is logged consistently.
 """
 
 from __future__ import annotations
@@ -10,10 +19,14 @@ import threading
 import time
 import structlog
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 from secure_agents.core.base_provider import BaseProvider
 from secure_agents.core.base_tool import BaseTool
 from secure_agents.core.metrics import metrics
+
+if TYPE_CHECKING:
+    from secure_agents.core.job_queue import JobQueue
 
 logger = structlog.get_logger()
 
@@ -31,10 +44,13 @@ class BaseAgent(ABC):
         tools: dict[str, BaseTool],
         provider: BaseProvider,
         config: dict | None = None,
+        *,
+        job_queue: JobQueue | None = None,
     ) -> None:
         self.tools = tools
         self.provider = provider
         self.config = config or {}
+        self.job_queue = job_queue
         self._stop_event = threading.Event()
 
     @property
@@ -95,6 +111,19 @@ class BaseAgent(ABC):
         if name not in self.tools:
             raise KeyError(f"Tool '{name}' not available. Agent has: {list(self.tools)}")
         return self.tools[name]
+
+    # ── Multi-agent sequencing ──────────────────────────────────────────
+
+    def emit(self, agent: str, payload: dict) -> None:
+        """Enqueue a job for another agent.  No-op if no queue is wired.
+
+        This is the **only** sanctioned way for one agent to hand off work to
+        another.  Never call ``self.job_queue.enqueue()`` directly — always
+        call :meth:`emit` so the log line and the None-guard are consistent.
+        """
+        if self.job_queue is not None:
+            self.job_queue.enqueue(agent=agent, payload=payload)
+            logger.info("agent.emitted", from_agent=self.name, to_agent=agent)
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} name={self.name!r} tools={list(self.tools)}>"

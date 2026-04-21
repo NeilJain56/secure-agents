@@ -3,12 +3,47 @@
 Used by both the CLI and the web UI server to avoid duplication.
 Only local providers are supported — any provider class must declare
 ``local_only = True``.  This is enforced at build time.
+
+A single :class:`~secure_agents.core.job_queue.JobQueue` instance is
+created from the top-level ``queue`` config and passed into every agent
+so they can hand off work to each other via :meth:`BaseAgent.emit`.
 """
 
 from __future__ import annotations
 
+import structlog
+
 from secure_agents.core.config import AppConfig
+from secure_agents.core.job_queue import JobQueue
 from secure_agents.core.registry import registry
+
+logger = structlog.get_logger()
+
+# Module-level singleton so all agents share one queue and callers
+# (e.g. the UI server) can inspect it without re-creating it.
+_shared_queue: JobQueue | None = None
+
+
+def get_shared_queue() -> JobQueue | None:
+    """Return the shared JobQueue instance, or *None* if not yet built."""
+    return _shared_queue
+
+
+def _ensure_shared_queue(config: AppConfig) -> JobQueue:
+    """Lazily create the shared queue from the app config."""
+    global _shared_queue
+    if _shared_queue is None:
+        q_cfg = config.queue
+        _shared_queue = JobQueue(
+            db_path=q_cfg.db_path,
+            max_retries=q_cfg.max_retries,
+            retry_delay=q_cfg.retry_delay_seconds,
+        )
+        logger.info(
+            "builder.job_queue_initialized",
+            db_path=q_cfg.db_path,
+        )
+    return _shared_queue
 
 
 def discover_all() -> None:
@@ -68,5 +103,9 @@ def build_agent(agent_name: str, config: AppConfig):
     }
     tools = registry.resolve_tools(tool_names, tool_configs)
 
+    # Shared job queue — all agents get the same instance so they can
+    # hand off work to each other via self.emit().
+    queue = _ensure_shared_queue(config)
+
     agent_cls = registry.get_agent(agent_name)
-    return agent_cls(tools=tools, provider=provider, config=merged)
+    return agent_cls(tools=tools, provider=provider, config=merged, job_queue=queue)

@@ -95,7 +95,11 @@ validator:
 # Maximum number of agent threads running simultaneously.
 max_workers: 4
 
-# ─── Job Queue ───────────────────────────────────────────────────────────────
+# ─── Job Queue (multi-agent sequencing) ──────────────────────────────────────
+# A shared SQLite-backed queue that agents use to hand work to each other.
+# Agent A calls `self.emit("agent_b", {...})` — the payload appears in B's
+# queue as a pending job.  The builder wires one queue instance to every
+# agent automatically.
 queue:
   db_path: ./data/jobs.db
   max_retries: 3

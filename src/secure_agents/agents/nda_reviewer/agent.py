@@ -69,8 +69,8 @@ class NDAReviewerAgent(BaseAgent):
         "Emails findings back to the original sender",
     ]
 
-    def __init__(self, tools, provider, config=None):
-        super().__init__(tools, provider, config)
+    def __init__(self, tools, provider, config=None, **kwargs):
+        super().__init__(tools, provider, config, **kwargs)
         self.poll_interval = self.config.get("poll_interval_seconds", 60)
         security = self.config.get("security", {})
         self.audit = AuditLog(security.get("audit_log_path", "./logs/audit.log"))

@@ -27,13 +27,14 @@ class BaseAgent(ABC):
     version: str            # Semver string
     features: list[str]     # Bullet points for the dashboard
 
-    def __init__(self, tools: dict, provider: BaseProvider, config: dict | None = None)
+    def __init__(self, tools: dict, provider: BaseProvider, config: dict | None = None, *, job_queue: JobQueue | None = None)
     def setup(self) -> None          # Optional hook, called once before the loop
     def tick(self) -> None           # REQUIRED. One iteration of work.
     def shutdown(self) -> None       # Optional hook, called once on stop
     def run(self) -> None            # Framework loop — do NOT override
     def request_stop(self) -> None   # Thread-safe stop signal
     def get_tool(self, name) -> BaseTool  # Lookup a tool by registered name
+    def emit(self, agent: str, payload: dict) -> None  # Enqueue a job for another agent (no-op if no queue)
 ```
 
 Rules:
@@ -42,6 +43,8 @@ Rules:
 - Access tools via `self.get_tool("name")`, not `self.tools` directly.
 - `self.config` is already deep-merged (defaults + agent overrides).
 - `self.provider.complete(messages, response_schema=...)` calls the LLM. Messages use `Message(role=, content=, name=)`. ALWAYS pass a `response_schema` for structured outputs and build messages with `MessageBuilder`, not by hand.
+- To hand off work to another agent, call `self.emit("target_agent", {"key": "value"})`. NEVER call `self.job_queue.enqueue()` directly. `emit()` is a safe no-op when no queue is wired.
+- The `job_queue` parameter is optional (default `None`). The builder passes a shared `JobQueue` instance automatically — you never need to create one yourself.
 
 ### BaseTool (src/secure_agents/core/base_tool.py)
 

@@ -8,11 +8,15 @@ Secure Agents is a secure, on-prem AI agent framework for legal professionals an
 
 Three interchangeable component types form the core:
 
-- **Agents** -- Thin workflow orchestrators. Compose tools + a provider. Never implement I/O directly.
+- **Agents** -- Thin workflow orchestrators. Compose tools + a provider. Never implement I/O directly. Agents hand off work to other agents via `self.emit(agent_name, payload)` through a shared `JobQueue`.
 - **Tools** -- Reusable capabilities (email, document parsing, file storage). Shared across agents via registry.
 - **Providers** -- LLM backend abstraction. Any local provider (Ollama, llama.cpp, vLLM, LM Studio, LocalAI, OpenAI-compatible) can be plugged in. Each provider class MUST declare `local_only = True`; the builder rejects anything that doesn't.
 
 All three register via decorators and are discovered at import time by the registry.
+
+### Multi-Agent Sequencing
+
+Agents can hand work to each other via a **shared SQLite-backed job queue**. The builder instantiates one `JobQueue` from `queue.*` config and passes it to every agent. Agents call `self.emit(target_agent, payload)` to enqueue a job — never `self.job_queue.enqueue()` directly. `emit()` is a no-op when no queue is wired (keeps tests simple). Common patterns: sequential handoff (A → B), parallel fan-out (A → B + C), orchestrator (routes by state).
 
 ### Three-Layer Prompt Injection Defense
 
@@ -33,7 +37,7 @@ These three layers replace the old regex-based `sanitize_text()`.
 ```
 src/secure_agents/
   core/
-    base_agent.py      # BaseAgent ABC -- DO NOT MODIFY
+    base_agent.py      # BaseAgent ABC (job_queue param, emit() helper) -- DO NOT MODIFY
     base_tool.py       # BaseTool ABC -- DO NOT MODIFY
     base_provider.py   # BaseProvider ABC, Message (with name field), CompletionResponse -- DO NOT MODIFY
     registry.py        # Global Registry singleton, @register_* decorators -- DO NOT MODIFY
@@ -47,7 +51,7 @@ src/secure_agents/
     sandbox.py         # Docker isolated execution (enabled by default, no subprocess fallback)
     job_queue.py       # SQLite-backed job queue (JobQueue, Job, JobStatus), DB file has 0o600 permissions
     metrics.py         # In-memory MetricsCollector singleton
-    builder.py         # discover_all(), build_agent() -- wires agents/tools/providers
+    builder.py         # discover_all(), build_agent(), shared JobQueue singleton -- wires agents/tools/providers
     logger.py          # structlog setup
   providers/
     ollama.py          # Ollama (uses native `format` for JSON Schema)
@@ -177,7 +181,7 @@ Defined in `src/secure_agents/core/config.py`:
 - **AppConfig** (top-level): `defaults`, `provider`, `queue`, `credentials`, `agents`, `max_workers`
 - **ProviderConfig**: `active` (str — name of any registered local provider), plus per-provider sub-objects (`ollama`, `llamacpp`, `vllm`, `lmstudio`, `localai`)
 - **ProviderSettings**: `host`, `model`, `temperature`
-- **QueueConfig**: `db_path`, `max_retries`, `retry_delay_seconds`
+- **QueueConfig**: `db_path`, `max_retries`, `retry_delay_seconds` — the builder creates a single `JobQueue` from these and passes it to every agent for multi-agent sequencing via `emit()`
 - **CredentialsConfig**: `backend` (`auto` | `keychain` | `encrypted_file`), `store_path` (encrypted store location, default `~/.secure-agents/credentials.enc`)
 
 The active provider is selected via `provider.active`. Settings for that provider live under a key matching its name. Any agent can override the provider (or its model/temperature/host) via `agents.<name>.provider.override` etc. The builder verifies the selected provider declares `local_only = True` and raises `ValueError` otherwise.
