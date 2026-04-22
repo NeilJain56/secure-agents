@@ -55,7 +55,16 @@ class OllamaProvider(BaseProvider):
                 for m in messages
             ],
             "stream": False,
-            "options": {"temperature": temp},
+            "options": {
+                "temperature": temp,
+                # Cap output tokens so structured-output calls never stall.
+                # Our JSON outputs have: category/is_similar key (~5 tok),
+                # confidence (~5 tok), reasoning up to 300 chars (~75 tok),
+                # plus JSON syntax (~20 tok) = ~105 tokens max.
+                # Benchmarked at 100: always produces valid JSON, ~8-10s/call.
+                # 150 was safe but wasted ~2s of generation per call.
+                "num_predict": 100,
+            },
         }
 
         # Structured output: schema takes precedence over plain json_mode
@@ -67,7 +76,7 @@ class OllamaProvider(BaseProvider):
         response = httpx.post(
             f"{self.host}/api/chat",
             json=payload,
-            timeout=300.0,
+            timeout=120.0,
         )
         response.raise_for_status()
         data = response.json()

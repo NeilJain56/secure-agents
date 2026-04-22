@@ -17,6 +17,7 @@ config.yaml
 /output/
 /temp/
 /logs/
+/ai_generated/
 .DS_Store
 .idea/
 .vscode/

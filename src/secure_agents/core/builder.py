@@ -100,6 +100,10 @@ def build_agent(agent_name: str, config: AppConfig):
         "email_sender": email_cfg.get("smtp", {}),
         "document_parser": security_cfg,
         "file_storage": storage_cfg,
+        "text_extractor": security_cfg,
+        "file_manager": {
+            "output_root": merged.get("output_root", "./ai_generated"),
+        },
     }
     tools = registry.resolve_tools(tool_names, tool_configs)
 

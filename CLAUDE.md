@@ -60,11 +60,19 @@ src/secure_agents/
   tools/
     email_reader.py    # IMAP inbox monitor, attachment download
     email_sender.py    # SMTP email sending
-    document_parser.py # PDF/DOCX text extraction
+    document_parser.py # PDF/DOCX text extraction (Docker sandbox)
     file_storage.py    # Local JSON report storage
+    text_extractor.py  # Text extraction from PDF/DOCX/DOC/PPTX/XLSX (no sandbox — trusted local files)
+    file_manager.py    # Directory scan, file copy, mkdir, CSV write (path-jailed)
     _template.py       # Copy this to create a new tool
   agents/
-    nda_reviewer/      # Example agent: NDA review via email
+    nda_reviewer/      # Email-triggered NDA review agent
+      agent.py
+      prompts.py
+    doc_sorter/        # Document classification pipeline (NDA / MSA company / MSA third-party)
+      agent.py
+      prompts.py
+    deduplicator/      # Dedup agents (1 base class, 3 registrations: nda, msa_company, msa_thirdparty)
       agent.py
       prompts.py
     _template/         # Copy this directory to create a new agent

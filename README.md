@@ -230,6 +230,8 @@ Reusable capabilities shared across agents. Declare which tools an agent needs i
 | `email_sender` | Send emails via SMTP with attachments (TLS enforced) |
 | `document_parser` | Extract text from PDF/DOCX (sandboxed via Docker) |
 | `file_storage` | Save and load JSON reports locally (path-traversal protected) |
+| `text_extractor` | Extract text from PDF/DOCX/DOC/PPTX/XLSX (trusted local files, no sandbox) |
+| `file_manager` | Scan directories, copy files, create folders, write CSVs (path-jailed) |
 
 ### Providers
 
@@ -256,6 +258,52 @@ All components register via decorators and are auto-discovered at startup:
 ```
 
 No manual imports or wiring. Drop a file in the right directory, add a decorator, and it's available.
+
+---
+
+## Document Sorting & Dedup Pipeline
+
+A built-in multi-agent pipeline that sorts a folder of mixed legal documents into three categories and finds near-duplicates within each category.
+
+### Pipeline flow
+
+```
+source_folder/  (PDF, DOCX, DOC, PPTX, XLSX)
+      │
+      ▼
+ ┌────────────┐  one LLM call per file (no context bleed)
+ │ doc_sorter  │  classifies → copies into category folders
+ └─────┬──────┘
+       │ emit() × 3
+       ▼
+ ┌───────────────┐  ┌──────────────────────┐  ┌───────────────────────────┐
+ │ nda_dedup     │  │ msa_company_dedup    │  │ msa_thirdparty_dedup      │
+ └───────┬───────┘  └──────────┬───────────┘  └─────────────┬─────────────┘
+         ▼                     ▼                             ▼
+ ai_generated/           ai_generated/                  ai_generated/
+ NDAs/                   MSAs (company)/                MSAs (third party)/
+   duplicates.csv          duplicates.csv                 duplicates.csv
+```
+
+### Quick start
+
+1. Set `source_folder` in `config.yaml` (under `agents.doc_sorter`) to point at your unsorted files.
+2. Run the pipeline:
+   ```bash
+   secure-agents start doc_sorter nda_deduplicator msa_company_deduplicator msa_thirdparty_deduplicator
+   ```
+3. Results appear in `output_root` (default `./ai_generated/`) with one `duplicates.csv` per category.
+   Tip: set `output_root` to the same path as `source_folder` so sorted subfolders appear alongside your originals.
+
+The CSV format: `file_a, file_b, confidence, reasoning`.
+
+### How dedup works
+
+1. Extract text from every file in a category folder.
+2. **Pre-filter** with Jaccard word-set similarity (stdlib, instant) — skip obviously dissimilar pairs.
+3. **LLM comparison** on candidate pairs — structured JSON response with `is_similar`, `confidence`, and `reasoning`.
+
+For ~33 files per category (~100 total), the pre-filter typically cuts pairwise comparisons from 528 to ~50-100 LLM calls, keeping total runtime under 30 minutes.
 
 ---
 
@@ -452,6 +500,7 @@ src/secure_agents/
     config.py           Config loading, validation, env var interpolation
     credential_backends.py  Pluggable backends: Keychain, EncryptedFile (AES-GCM + scrypt), Env
     credentials.py      Thin facade over the active backend + OAuth2 helpers
+    job_queue.py        SQLite-backed job queue for multi-agent sequencing
     security.py         File validation (magic bytes), filename/path safety, audit log
     schemas.py          JSON schemas + lightweight validator for structured outputs
     validator.py        InputValidator: secondary LLM that fails closed on unsafe input
@@ -470,10 +519,14 @@ src/secure_agents/
     email_sender.py     SMTP email sending (TLS enforced)
     document_parser.py  PDF/DOCX text extraction (sandboxed)
     file_storage.py     Local JSON report storage (path-traversal protected)
+    text_extractor.py   PDF/DOCX/DOC/PPTX/XLSX text extraction (trusted local files)
+    file_manager.py     Dir scan, copy, mkdir, CSV write (path-jailed)
     _template.py        Copy this to create a new tool
 
   agents/           # Agent implementations
-    nda_reviewer/       Example: NDA review via email monitoring
+    nda_reviewer/       Email-triggered NDA review agent
+    doc_sorter/         Document classification pipeline (→ 3 category folders)
+    deduplicator/       Near-duplicate detection (1 base, 3 registrations)
     _template/          Copy this directory to create a new agent
 
   ui/               # Web dashboard

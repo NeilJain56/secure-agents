@@ -173,3 +173,38 @@ agents:
   #     override: llamacpp               # Any registered local_only provider
   #     model: default
   #     temperature: 0.0
+
+  # ── Document Sorting & Dedup Pipeline ────────────────────────────────────
+  # Sorts files from source_folder into 3 categories (NDA, MSA-company,
+  # MSA-thirdparty), then deduplicates each category.
+  #
+  # Run with:  secure-agents start doc_sorter
+  # The sorter automatically emits jobs to the 3 dedup agents.
+  doc_sorter:
+    enabled: true
+    source_folder: /path/to/unsorted/files    # ← CHANGE THIS
+    output_root: ./ai_generated
+    tools:
+      - text_extractor
+      - file_manager
+
+  nda_deduplicator:
+    enabled: true
+    output_root: ./ai_generated
+    tools:
+      - text_extractor
+      - file_manager
+
+  msa_company_deduplicator:
+    enabled: true
+    output_root: ./ai_generated
+    tools:
+      - text_extractor
+      - file_manager
+
+  msa_thirdparty_deduplicator:
+    enabled: true
+    output_root: ./ai_generated
+    tools:
+      - text_extractor
+      - file_manager
