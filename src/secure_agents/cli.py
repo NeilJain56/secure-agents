@@ -9,7 +9,12 @@ from pathlib import Path
 import click
 import structlog
 
-from secure_agents.core.agent_status import clear_status, write_status
+from secure_agents.core.agent_status import (
+    clear_pipeline_status,
+    clear_status,
+    write_pipeline_status,
+    write_status,
+)
 from secure_agents.core.builder import build_agent, discover_all
 from secure_agents.core.config import load_config
 from secure_agents.core.logger import setup_logging
@@ -26,32 +31,37 @@ def _build_agent(agent_name: str, config):
     return build_agent(agent_name, config)
 
 
-def _run_agents(agent_names: list[str], config) -> None:
-    """Run one or more agents in parallel with coordinated shutdown."""
-    agents = []
-    for name in agent_names:
-        agents.append((name, _build_agent(name, config)))
+def _run_agents(agent_names: list[str], config, abort: threading.Event | None = None) -> bool:
+    """Run one or more agents in parallel; block until all finish or *abort* fires.
+
+    Returns True if all agents completed normally, False if interrupted.
+    When *abort* is None the function installs its own SIGINT/SIGTERM handlers.
+    """
+    agents = [(name, _build_agent(name, config)) for name in agent_names]
 
     if len(agents) == 1:
         name, agent = agents[0]
-        click.echo(f"Starting agent: {name}")
+        click.echo(f"  Starting {name}")
+        _abort = abort or threading.Event()
 
-        def _signal_handler(sig, frame):
-            click.echo(f"\nStopping {name}...")
-            agent.request_stop()
-            clear_status(name)
+        if abort is None:
+            def _signal_handler(sig, frame):
+                click.echo(f"\nStopping {name}...")
+                agent.request_stop()
+                clear_status(name)
+                _abort.set()
+            signal.signal(signal.SIGINT, _signal_handler)
+            signal.signal(signal.SIGTERM, _signal_handler)
 
-        signal.signal(signal.SIGINT, _signal_handler)
-        signal.signal(signal.SIGTERM, _signal_handler)
         write_status(name)
         try:
             agent.run()
         finally:
             clear_status(name)
-        return
+        return not _abort.is_set()
 
     # Multiple agents: run each in its own thread
-    click.echo(f"Starting {len(agents)} agents in parallel: {', '.join(n for n, _ in agents)}")
+    click.echo(f"  Starting {', '.join(n for n, _ in agents)} in parallel")
     threads = []
     for name, agent in agents:
         write_status(name)
@@ -68,35 +78,93 @@ def _run_agents(agent_names: list[str], config) -> None:
         t.start()
         threads.append((name, agent, t))
 
-    # Main thread waits for SIGINT/SIGTERM then stops all agents
-    shutdown = threading.Event()
+    _abort = abort or threading.Event()
+
+    if abort is None:
+        def _signal_handler(sig, frame):
+            click.echo(f"\nStopping agents...")
+            for n, a, _ in threads:
+                a.request_stop()
+                clear_status(n)
+            _abort.set()
+        signal.signal(signal.SIGINT, _signal_handler)
+        signal.signal(signal.SIGTERM, _signal_handler)
+
+    try:
+        while not _abort.is_set():
+            alive = [t for _, _, t in threads if t.is_alive()]
+            if not alive:
+                break
+            _abort.wait(timeout=1.0)
+    except KeyboardInterrupt:
+        for n, a, _ in threads:
+            a.request_stop()
+            clear_status(n)
+        _abort.set()
+
+    if _abort.is_set():
+        for n, a, _ in threads:
+            a.request_stop()
+            clear_status(n)
+        for _, _, t in threads:
+            t.join(timeout=5.0)
+        return False
+
+    for _, _, t in threads:
+        t.join(timeout=5.0)
+    return True
+
+
+def _run_pipeline(pipeline_name: str, pipeline_cfg: dict, config) -> None:
+    """Run a pipeline stage-by-stage.
+
+    Each stage's agents run in parallel.  The next stage only starts after
+    every agent in the current stage has finished.  Ctrl-C stops the active
+    stage and does not proceed to the next one.
+
+    If the pipeline has no ``stages`` list, all agents run in parallel at
+    once (same as calling _run_agents directly).
+    """
+    stages = pipeline_cfg.get("stages")
+    if not stages:
+        agent_names = pipeline_cfg.get("agents", [])
+        _run_agents(agent_names, config)
+        return
+
+    desc = pipeline_cfg.get("description", "")
+    stage_summary = " → ".join(
+        f"[{', '.join(s)}]" if len(s) > 1 else s[0]
+        for s in stages
+    )
+    click.echo(f"Pipeline '{pipeline_name}'" + (f" — {desc}" if desc else ""))
+    click.echo(f"  {len(stages)} stage{'s' if len(stages) != 1 else ''}: {stage_summary}\n")
+
+    abort = threading.Event()
 
     def _signal_handler(sig, frame):
-        click.echo(f"\nStopping {len(agents)} agents...")
-        for name, agent, _ in threads:
-            agent.request_stop()
-            clear_status(name)
-        shutdown.set()
+        click.echo(f"\nAborting pipeline '{pipeline_name}'...")
+        abort.set()
 
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
-    # Wait for all threads or a shutdown signal
+    write_pipeline_status(pipeline_name)
     try:
-        while not shutdown.is_set():
-            alive = [t for _, _, t in threads if t.is_alive()]
-            if not alive:
+        for i, stage_agents in enumerate(stages, start=1):
+            if abort.is_set():
                 break
-            shutdown.wait(timeout=1.0)
-    except KeyboardInterrupt:
-        for name, agent, _ in threads:
-            agent.request_stop()
+            parallel_note = " (parallel)" if len(stage_agents) > 1 else ""
+            click.echo(f"Stage {i}/{len(stages)}{parallel_note}: {', '.join(stage_agents)}")
+            ok = _run_agents(stage_agents, config, abort=abort)
+            if not ok:
+                click.echo(f"\nPipeline aborted at stage {i}.")
+                return
+            click.echo(f"Stage {i} complete.\n")
+    finally:
+        clear_pipeline_status(pipeline_name)
 
-    # Give threads a moment to finish
-    for _, _, t in threads:
-        t.join(timeout=5.0)
-
-    click.echo("All agents stopped.")
+    if not abort.is_set():
+        click.echo(f"Pipeline '{pipeline_name}' complete.")
 
 
 @click.group()
@@ -150,26 +218,27 @@ def start(ctx, agent_names):
         secure-agents start nda_reviewer contract_analyzer  # specific set
     """
     config = load_config(ctx.obj["config_path"])
+    pipelines = getattr(config, "pipelines", {}) or {}
 
     if agent_names:
-        # Expand any pipeline names into their constituent agents
         raw_names = list(agent_names)
-        names = []
-        pipelines = getattr(config, "pipelines", {}) or {}
+
+        # Single pipeline name → run stage-by-stage
+        if len(raw_names) == 1 and raw_names[0] in pipelines:
+            name = raw_names[0]
+            _run_pipeline(name, pipelines[name], config)
+            return
+
+        # Mix of pipeline names and individual agents → expand flat, run in parallel
+        names: list[str] = []
         for name in raw_names:
             if name in pipelines:
-                pipeline_agents = pipelines[name].get("agents", [])
-                desc = pipelines[name].get("description", "")
-                click.echo(
-                    f"Pipeline '{name}'" + (f" — {desc}" if desc else "")
-                    + f" → {', '.join(pipeline_agents)}"
-                )
-                names.extend(pipeline_agents)
+                names.extend(pipelines[name].get("agents", []))
             else:
                 names.append(name)
         # De-duplicate while preserving order
         seen: set[str] = set()
-        deduped = []
+        deduped: list[str] = []
         for n in names:
             if n not in seen:
                 seen.add(n)
@@ -178,7 +247,7 @@ def start(ctx, agent_names):
     else:
         # Start all enabled agents
         names = [
-            name for name, agent_cfg in config.agents.items()
+            n for n, agent_cfg in config.agents.items()
             if agent_cfg.get("enabled", True)
         ]
 

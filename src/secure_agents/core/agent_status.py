@@ -85,6 +85,26 @@ def list_external() -> list[str]:
     return result
 
 
+def write_pipeline_status(pipeline_name: str) -> None:
+    """Record that *this* process is running the named pipeline."""
+    write_status(f"_pipeline_{pipeline_name}")
+
+
+def clear_pipeline_status(pipeline_name: str) -> None:
+    """Remove the pipeline-level status file on completion."""
+    clear_status(f"_pipeline_{pipeline_name}")
+
+
+def is_pipeline_running(pipeline_name: str) -> bool:
+    """Return True if this pipeline appears to be running in another process."""
+    return is_running_externally(f"_pipeline_{pipeline_name}")
+
+
+def get_pipeline_started_at(pipeline_name: str) -> float | None:
+    """Return the unix timestamp when this pipeline was last started, or None."""
+    return get_started_at(f"_pipeline_{pipeline_name}")
+
+
 def get_started_at(agent_name: str) -> float | None:
     """Return the unix timestamp when *agent_name* was started, or None.
 

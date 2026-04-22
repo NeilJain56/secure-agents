@@ -32,7 +32,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel
 
-from secure_agents.core.agent_status import is_running_externally
+from secure_agents.core.agent_status import (
+    get_pipeline_started_at,
+    is_pipeline_running,
+    is_running_externally,
+)
 from secure_agents.core.builder import build_agent, discover_all
 from secure_agents.core.config import load_config, AppConfig, validate_agent_name
 from secure_agents.core.credentials import get_credential, store_credential, get_oauth2_token
@@ -671,30 +675,30 @@ def _pipeline_agent_status(agent_name: str) -> dict:
     return {"name": agent_name, "running": is_running}
 
 
-def _compute_pipeline_progress(pcfg: dict, agent_statuses: list[dict]) -> int:
+def _compute_pipeline_progress(pipeline_name: str, pcfg: dict, agent_statuses: list[dict]) -> int:
     """Compute 0–100 progress percentage for a pipeline.
 
-    Logic (stage-aware):
-      - All agents stopped AND no stages ever ran → 0 (not started)
-      - Stage 1 agent(s) running                → 25
-      - Stage 1 done, stage 2 agents running    → 50 + (stopped_stage2 / total_stage2) * 50
-      - All stage 2 agents stopped              → 100
+    With stage-by-stage execution, stage-2 agents are only alive while they
+    have actual work — they do not idle-poll during stage 1.  Progress is
+    driven by the pipeline-level status file (written by the CLI for the
+    duration of the run) and per-agent status files (written only while each
+    agent's thread is live).
 
-    For stage 2 we use *stopped agent count* as a proxy for completed work.
-    Deduplicator agents are single-run: they stop themselves as soon as their
-    job finishes.  Counting stopped agents avoids relying on cumulative SQLite
-    job counts that accumulate across multiple pipeline runs.
+    States:
+      0%   — pipeline not running and no recent completed jobs
+      25%  — stage 1 running
+      50%  — stage 1 done (pending jobs in queue); stage 2 not started yet
+      50–99% — stage 2 running; each finished agent adds (50/N)%
+      100% — all done (no agents running, no pending jobs)
     """
     stages = pcfg.get("stages")
     if not stages or len(stages) < 2:
-        # Fallback: no structured stages — derive running fraction
+        # No stage topology — simple running fraction
         running_count = sum(1 for s in agent_statuses if s["running"])
         total = len(agent_statuses)
         if running_count == total and total > 0:
             return 50
-        if running_count > 0:
-            return 25
-        return 0
+        return 25 if running_count > 0 else 0
 
     stage1_names = set(stages[0])
     parallel_names = [a for stage in stages[1:] for a in stage]
@@ -705,35 +709,44 @@ def _compute_pipeline_progress(pcfg: dict, agent_statuses: list[dict]) -> int:
     stage1_running = any(by_name.get(n, False) for n in stage1_names)
     stage2_running = any(by_name.get(n, False) for n in parallel_names)
 
-    # Count stage-2 agents that have already stopped (completed their single job).
-    stage2_stopped = sum(1 for n in parallel_names if not by_name.get(n, False))
+    # --- Not started or already complete ---
+    if not stage1_running and not stage2_running:
+        # Is this pipeline actively executing (CLI process still alive)?
+        pipeline_active = is_pipeline_running(pipeline_name)
 
-    # --- Not started: stage 1 never ran ---
-    if not stage1_running and not stage2_running and stage2_stopped == 0:
-        # Double-check: were there any pending/processing jobs indicating a run
-        # is underway?  If the queue has pending jobs, stage 1 emitted them.
-        has_pending = False
-        if _job_queue is not None:
-            try:
-                stats = _job_queue.get_stats()
-                has_pending = (stats.get("pending", 0) + stats.get("processing", 0)) > 0
-            except Exception:
-                pass
-        if not has_pending:
-            return 0
+        if not pipeline_active:
+            # No CLI process — check whether it ever ran by looking at queue
+            if _job_queue is not None:
+                try:
+                    # Check for jobs created after the pipeline last started
+                    started_at = get_pipeline_started_at(pipeline_name)
+                    stats_per_agent: dict[str, dict] = {}
+                    for aname in parallel_names:
+                        per = _job_queue.get_stats(agent=aname)
+                        for status, count in per.items():
+                            stats_per_agent.setdefault(status, 0)
+                            stats_per_agent[status] += count
+                    completed = stats_per_agent.get("completed", 0)
+                    pending   = stats_per_agent.get("pending", 0) + stats_per_agent.get("processing", 0)
+                    if pending == 0 and completed >= total_parallel:
+                        return 100  # all dedup jobs done
+                except Exception:
+                    pass
+            return 0  # not started
+
+        # Pipeline process is alive but no agents running — between stages
+        # (stage 1 just finished, stage 2 hasn't started yet)
+        return 50
 
     # --- Stage 1 in progress ---
     if stage1_running:
         return 25
 
-    # --- Stage 2 in progress or complete ---
-    # 50 % base + each stopped stage-2 agent adds an equal share up to 50 pts.
+    # --- Stage 2 in progress ---
+    # Count how many stage-2 agents have already stopped (finished their job).
+    stage2_stopped = sum(1 for n in parallel_names if not by_name.get(n, False))
     pct = stage2_stopped / max(total_parallel, 1)
-    result = 50 + int(pct * 50)
-    # Cap at 99 while any stage-2 agent is still running; hit 100 only when all done.
-    if stage2_running:
-        return min(result, 99)
-    return result
+    return min(50 + int(pct * 50), 99)  # cap at 99 until all done
 
 
 @app.get("/api/pipelines")
@@ -758,7 +771,7 @@ def list_pipelines():
                 for stage in raw_stages
             ]
 
-        progress_pct = _compute_pipeline_progress(pcfg, agent_statuses)
+        progress_pct = _compute_pipeline_progress(name, pcfg, agent_statuses)
 
         # Job queue stats: split by status so the UI shows meaningful numbers.
         # pending + processing = active work; completed = historical.
