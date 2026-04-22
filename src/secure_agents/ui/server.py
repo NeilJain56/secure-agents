@@ -32,6 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel
 
+from secure_agents.core.agent_status import is_running_externally
 from secure_agents.core.builder import build_agent, discover_all
 from secure_agents.core.config import load_config, AppConfig, validate_agent_name
 from secure_agents.core.credentials import get_credential, store_credential, get_oauth2_token
@@ -209,7 +210,10 @@ def list_agents():
         agent_cfg = config.agents.get(name, {})
         merged = config.get_agent_config(name)
         health = _check_agent_health(name, config)
-        is_running = name in _running_agents and _running_agents[name]["thread"].is_alive()
+        is_running = (
+            (name in _running_agents and _running_agents[name]["thread"].is_alive())
+            or is_running_externally(name)
+        )
 
         email_username = merged.get("email", {}).get("imap", {}).get("username", "")
         auth_method = merged.get("email", {}).get("imap", {}).get("auth_method", "app_password")
@@ -537,8 +541,95 @@ def list_tools():
 
 @app.get("/api/metrics")
 def get_metrics():
-    """Return current metrics snapshot for all agents."""
-    return metrics.snapshot()
+    """Return current metrics snapshot for all agents.
+
+    Prefers the in-memory snapshot (agents started by this server process).
+    Falls back to reading the latest row per agent from the SQLite store so
+    that CLI-started agents (separate OS process) are always visible.
+    """
+    snap = metrics.snapshot()
+
+    # If the server started the agents, in-memory data is authoritative.
+    if snap["total_agents_tracked"] > 0:
+        return snap
+
+    # No in-memory data — try the persistent store (written by the CLI process).
+    if _metrics_store is None:
+        return snap
+
+    try:
+        import time as _time
+        now = _time.time()
+
+        # Fetch the most recent row per agent recorded in the last 24 hours.
+        rows = _metrics_store.query(range_hours=24)
+
+        # Build a synthetic snapshot keyed by agent name (latest row wins).
+        latest: dict[str, dict] = {}
+        for row in rows:
+            latest[row["agent"]] = row
+
+        agents_out: dict[str, dict] = {}
+        total_ticks = 0
+        total_errors = 0
+
+        # 1. Agents present in the persistent store (have had ≥10 ticks)
+        for agent_name, row in latest.items():
+            is_running = is_running_externally(agent_name)
+            ticks = row.get("ticks") or 0
+            errors = row.get("errors") or 0
+            latency_ms = row.get("latency_ms")
+            total_ticks += ticks
+            total_errors += errors
+            agents_out[agent_name] = {
+                "ticks": ticks,
+                "errors": errors,
+                "error_rate_pct": round(errors / ticks * 100, 2) if ticks else 0,
+                "running": is_running,
+                "status": row.get("status", "unknown"),
+                "latency": {"mean_ms": latency_ms} if latency_ms else None,
+                "last_recorded_at": row.get("ts"),
+                "starts": 0,
+                "stops": 0,
+                "uptime_s": round(now - row["ts"], 1) if row.get("ts") else None,
+                "run_count_today": 0,
+                "run_count_total": 0,
+            }
+
+        # 2. Agents that are running externally but haven't flushed to DB yet
+        #    (e.g. single-run agents that do all their work in one long tick).
+        from secure_agents.core.agent_status import list_external
+        for agent_name in list_external():
+            if agent_name not in agents_out:
+                agents_out[agent_name] = {
+                    "ticks": 0,
+                    "errors": 0,
+                    "error_rate_pct": 0,
+                    "running": True,
+                    "status": "running",
+                    "latency": None,
+                    "last_recorded_at": None,
+                    "starts": 0,
+                    "stops": 0,
+                    "uptime_s": None,
+                    "run_count_today": 0,
+                    "run_count_total": 0,
+                }
+
+        if not agents_out:
+            return snap
+
+        return {
+            "server_uptime_s": snap["server_uptime_s"],
+            "total_agents_tracked": len(agents_out),
+            "total_ticks": total_ticks,
+            "total_errors": total_errors,
+            "agents": agents_out,
+            "source": "persistent_store",
+        }
+    except Exception as exc:
+        logger.warning("server.metrics_fallback_failed", error=str(exc))
+        return snap
 
 
 # ── Pipeline endpoints ────────────────────────────────────────────────────────
@@ -546,15 +637,80 @@ def get_metrics():
 def _pipeline_agent_status(agent_name: str) -> dict:
     """Return running status + health summary for one agent within a pipeline."""
     is_running = (
-        agent_name in _running_agents
-        and _running_agents[agent_name]["thread"].is_alive()
+        (agent_name in _running_agents and _running_agents[agent_name]["thread"].is_alive())
+        or is_running_externally(agent_name)
     )
     return {"name": agent_name, "running": is_running}
 
 
+def _compute_pipeline_progress(pcfg: dict, agent_statuses: list[dict]) -> int:
+    """Compute 0–100 progress percentage for a pipeline.
+
+    Logic (stage-aware):
+      - All agents stopped AND no stages ever ran → 0 (not started)
+      - Stage 1 agent(s) running                → 25
+      - Stage 1 done, stage 2 agents running    → 50 + (stopped_stage2 / total_stage2) * 50
+      - All stage 2 agents stopped              → 100
+
+    For stage 2 we use *stopped agent count* as a proxy for completed work.
+    Deduplicator agents are single-run: they stop themselves as soon as their
+    job finishes.  Counting stopped agents avoids relying on cumulative SQLite
+    job counts that accumulate across multiple pipeline runs.
+    """
+    stages = pcfg.get("stages")
+    if not stages or len(stages) < 2:
+        # Fallback: no structured stages — derive running fraction
+        running_count = sum(1 for s in agent_statuses if s["running"])
+        total = len(agent_statuses)
+        if running_count == total and total > 0:
+            return 50
+        if running_count > 0:
+            return 25
+        return 0
+
+    stage1_names = set(stages[0])
+    parallel_names = [a for stage in stages[1:] for a in stage]
+    total_parallel = len(parallel_names)
+
+    by_name = {s["name"]: s["running"] for s in agent_statuses}
+
+    stage1_running = any(by_name.get(n, False) for n in stage1_names)
+    stage2_running = any(by_name.get(n, False) for n in parallel_names)
+
+    # Count stage-2 agents that have already stopped (completed their single job).
+    stage2_stopped = sum(1 for n in parallel_names if not by_name.get(n, False))
+
+    # --- Not started: stage 1 never ran ---
+    if not stage1_running and not stage2_running and stage2_stopped == 0:
+        # Double-check: were there any pending/processing jobs indicating a run
+        # is underway?  If the queue has pending jobs, stage 1 emitted them.
+        has_pending = False
+        if _job_queue is not None:
+            try:
+                stats = _job_queue.get_stats()
+                has_pending = (stats.get("pending", 0) + stats.get("processing", 0)) > 0
+            except Exception:
+                pass
+        if not has_pending:
+            return 0
+
+    # --- Stage 1 in progress ---
+    if stage1_running:
+        return 25
+
+    # --- Stage 2 in progress or complete ---
+    # 50 % base + each stopped stage-2 agent adds an equal share up to 50 pts.
+    pct = stage2_stopped / max(total_parallel, 1)
+    result = 50 + int(pct * 50)
+    # Cap at 99 while any stage-2 agent is still running; hit 100 only when all done.
+    if stage2_running:
+        return min(result, 99)
+    return result
+
+
 @app.get("/api/pipelines")
 def list_pipelines():
-    """List all configured pipelines with per-agent run status."""
+    """List all configured pipelines with per-agent run status, stages, and progress."""
     config = _reload_config()
     pipelines_cfg = getattr(config, "pipelines", {}) or {}
     result = []
@@ -563,12 +719,27 @@ def list_pipelines():
         agent_statuses = [_pipeline_agent_status(a) for a in agent_names]
         all_running = bool(agent_statuses) and all(s["running"] for s in agent_statuses)
         any_running = any(s["running"] for s in agent_statuses)
+
+        # Build stages response: list of lists of agent status objects
+        raw_stages = pcfg.get("stages")
+        stages_response: list[list[dict]] | None = None
+        if raw_stages:
+            by_name = {s["name"]: s for s in agent_statuses}
+            stages_response = [
+                [by_name[a] for a in stage if a in by_name]
+                for stage in raw_stages
+            ]
+
+        progress_pct = _compute_pipeline_progress(pcfg, agent_statuses)
+
         result.append({
             "name": name,
             "description": pcfg.get("description", ""),
             "agents": agent_statuses,
             "all_running": all_running,
             "any_running": any_running,
+            "stages": stages_response,
+            "progress_pct": progress_pct,
         })
     return {"pipelines": result}
 
@@ -653,28 +824,110 @@ def get_agent_logs(agent_name: str, lines: int = 200):
     return {"lines": matched[-lines:], "total": len(matched)}
 
 
-@app.get("/api/outputs")
-def list_outputs():
-    """List all output files organized by agent."""
-    project_root = Path(_config_path).resolve().parent
-    output_dir = project_root / "output"
+def _scan_output_dir(output_dir: Path) -> list[dict]:
+    """Return a list of file info dicts for all files under output_dir."""
+    files = []
     if not output_dir.exists():
-        return {"agents": {}}
-
-    result: dict[str, list] = {}
+        return files
     for item in sorted(output_dir.rglob("*")):
         if item.is_file():
-            rel = item.relative_to(output_dir)
-            parts = rel.parts
-            agent = parts[0] if len(parts) > 1 else "_root"
-            if agent not in result:
-                result[agent] = []
             stat = item.stat()
-            result[agent].append({
-                "name": str(rel),
+            files.append({
+                "name": str(item.relative_to(output_dir)),
+                "path": str(item),
                 "size": stat.st_size,
                 "modified": stat.st_mtime,
             })
+    return files
+
+
+@app.get("/api/pipelines/{pipeline_name}/outputs")
+def get_pipeline_outputs(pipeline_name: str):
+    """List output files for all agents in a pipeline, grouped by agent."""
+    config = _reload_config()
+    pipelines_cfg = getattr(config, "pipelines", {}) or {}
+    if pipeline_name not in pipelines_cfg:
+        raise HTTPException(404, "Pipeline not found")
+
+    pcfg = pipelines_cfg[pipeline_name]
+    agent_names = pcfg.get("agents", [])
+    sections = []
+
+    for agent_name in agent_names:
+        merged = config.get_agent_config(agent_name)
+        output_root = merged.get("output_root")
+        if not output_root:
+            continue
+        output_path = Path(output_root)
+        csv_files = []
+        if output_path.exists():
+            for item in sorted(output_path.rglob("*.csv")):
+                stat = item.stat()
+                csv_files.append({
+                    "name": str(item.relative_to(output_path)),
+                    "path": str(item),
+                    "size": stat.st_size,
+                    "modified": stat.st_mtime,
+                })
+        if csv_files:
+            sections.append({"title": agent_name, "files": csv_files})
+
+    return {"pipeline": pipeline_name, "sections": sections}
+
+
+@app.get("/api/outputs")
+def list_outputs():
+    """List all output files organized by agent.
+
+    Scans both the project-level ./output/ directory and each agent's
+    ``output_root`` directory from config (so pipeline outputs are visible
+    even when they write to external paths).
+    """
+    project_root = Path(_config_path).resolve().parent
+    result: dict[str, list] = {}
+
+    # 1. Scan ./output/ (legacy location)
+    output_dir = project_root / "output"
+    if output_dir.exists():
+        for item in sorted(output_dir.rglob("*")):
+            if item.is_file():
+                rel = item.relative_to(output_dir)
+                parts = rel.parts
+                agent = parts[0] if len(parts) > 1 else "_root"
+                if agent not in result:
+                    result[agent] = []
+                stat = item.stat()
+                result[agent].append({
+                    "name": str(rel),
+                    "size": stat.st_size,
+                    "modified": stat.st_mtime,
+                })
+
+    # 2. Scan each agent's output_root from config
+    try:
+        config = _get_config()
+        for agent_name in config.agents:
+            merged = config.get_agent_config(agent_name)
+            output_root = merged.get("output_root")
+            if not output_root:
+                continue
+            opath = Path(output_root)
+            if not opath.exists() or opath == output_dir:
+                continue
+            for item in sorted(opath.rglob("*.csv")):
+                if item.is_file():
+                    bucket = agent_name
+                    if bucket not in result:
+                        result[bucket] = []
+                    stat = item.stat()
+                    result[bucket].append({
+                        "name": str(item.relative_to(opath)),
+                        "size": stat.st_size,
+                        "modified": stat.st_mtime,
+                    })
+    except Exception:
+        pass
+
     return {"agents": result}
 
 

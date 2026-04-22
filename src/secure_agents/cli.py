@@ -9,6 +9,7 @@ from pathlib import Path
 import click
 import structlog
 
+from secure_agents.core.agent_status import clear_status, write_status
 from secure_agents.core.builder import build_agent, discover_all
 from secure_agents.core.config import load_config
 from secure_agents.core.logger import setup_logging
@@ -38,17 +39,32 @@ def _run_agents(agent_names: list[str], config) -> None:
         def _signal_handler(sig, frame):
             click.echo(f"\nStopping {name}...")
             agent.request_stop()
+            clear_status(name)
 
         signal.signal(signal.SIGINT, _signal_handler)
         signal.signal(signal.SIGTERM, _signal_handler)
-        agent.run()
+        write_status(name)
+        try:
+            agent.run()
+        finally:
+            clear_status(name)
         return
 
     # Multiple agents: run each in its own thread
     click.echo(f"Starting {len(agents)} agents in parallel: {', '.join(n for n, _ in agents)}")
     threads = []
     for name, agent in agents:
-        t = threading.Thread(target=agent.run, name=f"agent-{name}", daemon=True)
+        write_status(name)
+
+        def _make_target(a, n):
+            def _run():
+                try:
+                    a.run()
+                finally:
+                    clear_status(n)
+            return _run
+
+        t = threading.Thread(target=_make_target(agent, name), name=f"agent-{name}", daemon=True)
         t.start()
         threads.append((name, agent, t))
 
@@ -59,6 +75,7 @@ def _run_agents(agent_names: list[str], config) -> None:
         click.echo(f"\nStopping {len(agents)} agents...")
         for name, agent, _ in threads:
             agent.request_stop()
+            clear_status(name)
         shutdown.set()
 
     signal.signal(signal.SIGINT, _signal_handler)
@@ -103,6 +120,17 @@ def main(ctx, config, json_logs):
             backend=cfg.credentials.backend,
             store_path=cfg.credentials.store_path,
         )
+    except Exception:
+        pass
+
+    # Initialize persistent metrics store so CLI-started agents persist tick
+    # data to SQLite — mirrors what server.py does at dashboard startup.
+    try:
+        from secure_agents.core.metrics import metrics
+        from secure_agents.core.metrics_store import get_store
+        db_path = Path(config).resolve().parent / "data" / "metrics.db"
+        _store = get_store(str(db_path))
+        metrics.set_store(_store)
     except Exception:
         pass
 

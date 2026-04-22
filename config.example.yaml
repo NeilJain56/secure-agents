@@ -216,6 +216,10 @@ agents:
 #
 # Pipelines are purely organizational — agents still communicate through
 # the shared job queue (doc_sorter emits jobs to the 3 dedup agents).
+#
+# Optional `stages` field: describes the serial/parallel execution topology
+# for dashboard visualization and progress tracking.  Each list entry is one
+# stage; agents within a stage run in parallel.
 pipelines:
   doc_sort_pipeline:
     description: Sort and deduplicate legal documents (NDA, MSA company, MSA third-party)
@@ -224,3 +228,6 @@ pipelines:
       - nda_deduplicator
       - msa_company_deduplicator
       - msa_thirdparty_deduplicator
+    stages:
+      - [doc_sorter]
+      - [nda_deduplicator, msa_company_deduplicator, msa_thirdparty_deduplicator]

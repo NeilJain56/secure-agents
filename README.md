@@ -263,47 +263,49 @@ No manual imports or wiring. Drop a file in the right directory, add a decorator
 
 ## Document Sorting & Dedup Pipeline
 
-A built-in multi-agent pipeline that sorts a folder of mixed legal documents into three categories and finds near-duplicates within each category.
+A built-in multi-agent pipeline that sorts a folder of mixed legal documents into three categories and finds near-duplicates within each category — tested on a real corpus of 154 legal documents.
 
 ### Pipeline flow
 
 ```
 source_folder/  (PDF, DOCX, DOC, PPTX, XLSX)
       │
-      ▼
- ┌────────────┐  one LLM call per file (no context bleed)
- │ doc_sorter  │  classifies → copies into category folders
- └─────┬──────┘
+      ▼  Stage 1 — serial
+ ┌────────────┐  adaptive chunking: 1,500 → 3,500 → 6,000 chars
+ │ doc_sorter │  one LLM call per file, 4 parallel workers
+ └─────┬──────┘  copies files into category subfolders
        │ emit() × 3
-       ▼
+       ▼  Stage 2 — all three run in parallel
  ┌───────────────┐  ┌──────────────────────┐  ┌───────────────────────────┐
  │ nda_dedup     │  │ msa_company_dedup    │  │ msa_thirdparty_dedup      │
+ │ Jaccard ≥0.95 │  │ Jaccard ≥0.95        │  │ Jaccard ≥0.95             │
+ │ → LLM compare │  │ → LLM compare        │  │ → LLM compare             │
  └───────┬───────┘  └──────────┬───────────┘  └─────────────┬─────────────┘
          ▼                     ▼                             ▼
- ai_generated/           ai_generated/                  ai_generated/
  NDAs/                   MSAs (company)/                MSAs (third party)/
    duplicates.csv          duplicates.csv                 duplicates.csv
 ```
 
 ### Quick start
 
-1. Set `source_folder` in `config.yaml` (under `agents.doc_sorter`) to point at your unsorted files.
-2. Run the pipeline:
+1. Set `source_folder` and `output_root` in `config.yaml` to point at your folder.
+2. Run the pipeline with one command:
    ```bash
-   secure-agents start doc_sorter nda_deduplicator msa_company_deduplicator msa_thirdparty_deduplicator
+   secure-agents start doc_sort_pipeline
    ```
-3. Results appear in `output_root` (default `./ai_generated/`) with one `duplicates.csv` per category.
-   Tip: set `output_root` to the same path as `source_folder` so sorted subfolders appear alongside your originals.
+3. Results appear in `output_root` with one `duplicates.csv` per category.
 
 The CSV format: `file_a, file_b, confidence, reasoning`.
 
 ### How dedup works
 
-1. Extract text from every file in a category folder.
-2. **Pre-filter** with Jaccard word-set similarity (stdlib, instant) — skip obviously dissimilar pairs.
-3. **LLM comparison** on candidate pairs — structured JSON response with `is_similar`, `confidence`, and `reasoning`.
+1. Extract full text from every file in a category folder.
+2. **Jaccard pre-filter** (stdlib, instant) — compute word-set similarity for every pair; skip any pair below 0.95. Eliminates ~95% of pairs before any LLM call.
+3. **LLM comparison** on candidate pairs — send the first 4,000 chars of each document; model returns `is_similar`, `confidence`, and `reasoning` as structured JSON.
 
-For ~33 files per category (~100 total), the pre-filter typically cuts pairwise comparisons from 528 to ~50-100 LLM calls, keeping total runtime under 30 minutes.
+For the MSA-thirdparty category in our test set (~60–70 files, ~109 candidate pairs after pre-filtering), Stage 2 runs in ~16 minutes. All three categories run in parallel, so total dedup time equals the slowest category.
+
+→ **[Full pipeline documentation](docs/doc_sort_pipeline.md)** — architecture deep dive, performance numbers, configuration reference, and output format.
 
 ---
 

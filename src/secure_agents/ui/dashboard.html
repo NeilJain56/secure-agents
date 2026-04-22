@@ -1069,6 +1069,27 @@ footer {
   padding: 14px 0 16px;
   border-bottom: 1px solid var(--border);
 }
+/* Stage-aware pipeline flow */
+.pipeline-stages {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 14px 0 16px;
+  border-bottom: 1px solid var(--border);
+}
+.pipeline-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.stage-label {
+  font-size: 10px;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 2px;
+}
 .step-pill {
   padding: 5px 12px;
   border-radius: 20px;
@@ -1109,6 +1130,44 @@ footer {
   align-items: center;
   gap: 8px;
 }
+/* Progress bar */
+.pipeline-progress { margin: 12px 0 0; }
+.pipeline-progress-label {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-bottom: 4px;
+  display: flex;
+  justify-content: space-between;
+}
+.progress-bar-wrap {
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+.progress-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 0.5s ease;
+}
+.progress-bar-fill.complete { background: var(--green); }
+/* Audit log level badges */
+.level-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.level-badge.debug { background: var(--bg); color: var(--text-3); border: 1px solid var(--border); }
+.level-badge.info { background: var(--accent-soft); color: var(--accent-hover); border: 1px solid var(--accent-border); }
+.level-badge.warning { background: var(--amber-soft); color: #92400e; border: 1px solid var(--amber-border); }
+.level-badge.error { background: var(--red-soft); color: #991b1b; border: 1px solid var(--red-border); }
+.level-badge.critical { background: var(--red); color: white; }
 
 /* ─── Responsive ────────────────────────────────────────────────── */
 @media (max-width: 520px) {
@@ -1228,6 +1287,7 @@ const state = {
   metricsHistory: null,
   metricsHourly: null,
   outputs: null,
+  pipelineOutputSections: [],
   auditLog: null,
   auditOffset: 0,
   auditLimit: 50,
@@ -1601,11 +1661,20 @@ function renderAgents() {
 
 // ─── Rendering: Pipeline Tiles ───────────────────────────────────
 
+function _agentPill(agent) {
+  const cls = agent.running ? 'running' : 'ready';
+  const dot = agent.running
+    ? `<span class="status-dot" style="width:6px;height:6px;border-radius:50%;background:var(--green);display:inline-block;animation:pulse 2s infinite"></span>`
+    : '';
+  return `<span class="step-pill ${cls}">${dot}${esc(formatName(agent.name))}</span>`;
+}
+
 function renderPipelineTile(pipeline) {
   const allRunning = pipeline.all_running;
   const anyRunning = pipeline.any_running;
   const runningCount = pipeline.agents.filter(a => a.running).length;
   const total = pipeline.agents.length;
+  const progressPct = pipeline.progress_pct != null ? pipeline.progress_pct : 0;
 
   let tileClass = 'pipeline-tile';
   let badge;
@@ -1619,13 +1688,43 @@ function renderPipelineTile(pipeline) {
     badge = `<span class="status-badge badge-ready"><span class="status-dot"></span>Ready</span>`;
   }
 
-  const flowHtml = pipeline.agents.map((agent, i) => {
-    const cls = agent.running ? 'running' : 'ready';
-    const dot = agent.running
-      ? `<span class="status-dot" style="width:6px;height:6px;border-radius:50%;background:var(--green);display:inline-block;animation:pulse 2s infinite"></span>`
-      : '';
-    return `${i > 0 ? '<span class="step-arrow">→</span>' : ''}<span class="step-pill ${cls}">${dot}${esc(formatName(agent.name))}</span>`;
-  }).join('');
+  // Build flow visualization: stages (serial/parallel) or flat chain
+  let flowHtml;
+  if (pipeline.stages && pipeline.stages.length > 0) {
+    const stageLabels = ['Stage 1', 'Stage 2', 'Stage 3', 'Stage 4'];
+    flowHtml = `<div class="pipeline-stages">`;
+    pipeline.stages.forEach((stageAgents, idx) => {
+      if (idx > 0) flowHtml += `<span class="step-arrow">→</span>`;
+      const label = stageLabels[idx] || `Stage ${idx + 1}`;
+      const parallelNote = stageAgents.length > 1 ? ` <span style="font-size:9px;opacity:0.7">(parallel)</span>` : '';
+      flowHtml += `<div class="pipeline-stage">
+        <div class="stage-label">${label}${parallelNote}</div>
+        ${stageAgents.map(_agentPill).join('')}
+      </div>`;
+    });
+    flowHtml += `</div>`;
+  } else {
+    // Flat chain fallback
+    flowHtml = `<div class="pipeline-flow">${pipeline.agents.map((agent, i) =>
+      `${i > 0 ? '<span class="step-arrow">→</span>' : ''}${_agentPill(agent)}`
+    ).join('')}</div>`;
+  }
+
+  // Progress bar (show when running or progress > 0)
+  let progressHtml = '';
+  if (anyRunning || progressPct > 0) {
+    const fillClass = progressPct >= 100 ? 'progress-bar-fill complete' : 'progress-bar-fill';
+    progressHtml = `
+      <div class="pipeline-progress">
+        <div class="pipeline-progress-label">
+          <span>Pipeline progress</span>
+          <span>${progressPct}%</span>
+        </div>
+        <div class="progress-bar-wrap">
+          <div class="${fillClass}" style="width:${progressPct}%"></div>
+        </div>
+      </div>`;
+  }
 
   let actionBtn;
   if (allRunning) {
@@ -1658,7 +1757,8 @@ function renderPipelineTile(pipeline) {
         ${badge}
       </div>
       <div class="pipeline-body">
-        <div class="pipeline-flow">${flowHtml}</div>
+        ${flowHtml}
+        ${progressHtml}
         <div class="pipeline-footer">
           <span class="pipeline-stats">
             ${runningCount}/${total} agents running
@@ -2337,19 +2437,70 @@ function closeModal() {
 // ─── Outputs Tab ─────────────────────────────────────────────────
 async function fetchOutputs() {
   try {
-    const res = await fetch('/api/outputs');
-    if (!res.ok) throw new Error(res.statusText);
-    state.outputs = await res.json();
+    // Fetch general outputs and pipeline-specific outputs in parallel
+    const fetches = [fetch('/api/outputs').catch(() => null)];
+    for (const p of state.pipelines || []) {
+      fetches.push(
+        fetch(`/api/pipelines/${encodeURIComponent(p.name)}/outputs`).catch(() => null)
+      );
+    }
+    const results = await Promise.all(fetches);
+    const generalRes = results[0];
+    const pipelineResults = results.slice(1);
+
+    state.outputs = generalRes && generalRes.ok ? await generalRes.json() : { agents: {} };
+
+    // Collect pipeline sections (dedup by agent name vs general outputs)
+    const generalAgents = new Set(Object.keys(state.outputs.agents || {}));
+    state.pipelineOutputSections = [];
+    for (let i = 0; i < pipelineResults.length; i++) {
+      const r = pipelineResults[i];
+      if (!r || !r.ok) continue;
+      const d = await r.json();
+      if (d.sections && d.sections.length > 0) {
+        // Only include sections not already in general outputs
+        const newSections = d.sections.filter(s => !generalAgents.has(s.title));
+        if (newSections.length > 0) {
+          state.pipelineOutputSections.push({ pipeline: d.pipeline, sections: newSections });
+          newSections.forEach(s => generalAgents.add(s.title));
+        }
+      }
+    }
     renderOutputs();
   } catch (e) {
     state.outputs = null;
+    state.pipelineOutputSections = [];
     renderOutputs();
   }
 }
 
+function _outputFilesTable(files) {
+  let html = `
+    <div class="content-table-wrap">
+      <table class="content-table">
+        <thead><tr><th>File</th><th>Size</th><th>Modified</th></tr></thead>
+        <tbody>`;
+  for (const f of files) {
+    const size = f.size < 1024 ? `${f.size} B` : f.size < 1048576 ? `${(f.size/1024).toFixed(1)} KB` : `${(f.size/1048576).toFixed(1)} MB`;
+    const time = new Date(f.modified * 1000).toLocaleString();
+    html += `
+      <tr>
+        <td class="mono">${esc(f.name)}</td>
+        <td class="text-muted">${size}</td>
+        <td class="text-muted">${time}</td>
+      </tr>`;
+  }
+  html += `</tbody></table></div>`;
+  return html;
+}
+
 function renderOutputs() {
   const container = document.getElementById('outputs-content');
-  if (!state.outputs || Object.keys(state.outputs.agents || {}).length === 0) {
+  const generalAgents = Object.entries(state.outputs && state.outputs.agents ? state.outputs.agents : {});
+  const pipelineSections = state.pipelineOutputSections || [];
+  const totalSections = generalAgents.length + pipelineSections.reduce((n, g) => n + g.sections.length, 0);
+
+  if (totalSections === 0) {
     container.innerHTML = `
       <div class="metrics-empty">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -2362,7 +2513,9 @@ function renderOutputs() {
   }
 
   let html = '';
-  for (const [agentName, files] of Object.entries(state.outputs.agents)) {
+
+  // General outputs (./output/ directory)
+  for (const [agentName, files] of generalAgents) {
     html += `
       <div class="metrics-section">
         <div class="section-header">
@@ -2389,6 +2542,24 @@ function renderOutputs() {
     }
     html += `</tbody></table></div></div>`;
   }
+
+  // Pipeline-specific outputs (agent output_root directories)
+  for (const group of pipelineSections) {
+    html += `
+      <div class="metrics-section">
+        <div class="section-header">
+          <div class="section-title">${esc(formatName(group.pipeline))} pipeline outputs</div>
+        </div>`;
+    for (const section of group.sections) {
+      html += `
+        <div style="margin-bottom:16px">
+          <div style="font-size:13px;font-weight:580;color:var(--text-2);margin-bottom:8px">${esc(formatName(section.title))}</div>
+          ${_outputFilesTable(section.files)}
+        </div>`;
+    }
+    html += `</div>`;
+  }
+
   container.innerHTML = html;
 }
 
@@ -2417,6 +2588,32 @@ async function fetchAuditLog() {
   }
 }
 
+function _auditLevelBadge(level) {
+  if (!level) return '';
+  const l = String(level).toLowerCase();
+  return `<span class="level-badge ${l}">${esc(level.toUpperCase())}</span>`;
+}
+
+function _auditFormatTime(entry) {
+  // Structlog uses ISO string in "timestamp"; legacy format uses numeric "ts"
+  if (entry.timestamp) {
+    const ts = entry.timestamp;
+    // ISO string (structlog default)
+    if (typeof ts === 'string') {
+      try { return new Date(ts).toLocaleString(); } catch (_) { return ts; }
+    }
+    // Numeric unix timestamp
+    if (typeof ts === 'number') {
+      return new Date(ts * 1000).toLocaleString();
+    }
+  }
+  if (entry.ts) {
+    if (typeof entry.ts === 'number') return new Date(entry.ts * 1000).toLocaleString();
+    return String(entry.ts);
+  }
+  return '--';
+}
+
 function renderAuditLog() {
   const container = document.getElementById('audit-content');
   if (!state.auditLog || state.auditLog.entries.length === 0) {
@@ -2443,24 +2640,29 @@ function renderAuditLog() {
     </div>
     <div class="content-table-wrap">
       <table class="content-table">
-        <thead><tr><th>Time</th><th>Event</th><th>Agent</th><th>Details</th></tr></thead>
+        <thead><tr><th>Time</th><th>Level</th><th>Event</th><th>Agent</th><th>Details</th></tr></thead>
         <tbody>`;
 
   for (const entry of entries) {
-    const time = entry.timestamp ? new Date(entry.timestamp * 1000).toLocaleString() : (entry.ts || '--');
+    const time = _auditFormatTime(entry);
+    // Structlog events: key is "event". Legacy: "action".
     const event = entry.event || entry.action || '--';
+    const level = entry.level || '';
     const agent = entry.agent || entry.agent_name || '--';
-    const details = Object.keys(entry)
-      .filter(k => !['timestamp','ts','event','action','agent','agent_name','level'].includes(k))
-      .map(k => `${k}=${typeof entry[k] === 'object' ? JSON.stringify(entry[k]) : entry[k]}`)
+    // Show remaining fields as details, skipping structural keys
+    const skipKeys = new Set(['timestamp','ts','event','action','agent','agent_name','level']);
+    const details = Object.entries(entry)
+      .filter(([k]) => !skipKeys.has(k))
+      .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`)
       .join(', ');
 
     html += `
       <tr>
-        <td class="mono text-muted" style="white-space:nowrap">${esc(String(time))}</td>
+        <td class="mono text-muted" style="white-space:nowrap">${esc(time)}</td>
+        <td>${_auditLevelBadge(level)}</td>
         <td style="font-weight:530">${esc(event)}</td>
         <td>${esc(agent)}</td>
-        <td class="text-muted" style="max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(details)}">${esc(details)}</td>
+        <td class="text-muted" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(details)}">${esc(details)}</td>
       </tr>`;
   }
 
