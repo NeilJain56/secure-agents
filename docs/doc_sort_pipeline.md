@@ -367,7 +367,24 @@ Start the pipeline with a single command:
 secure-agents start doc_sort_pipeline
 ```
 
-That's it. The CLI expands `doc_sort_pipeline` into the four constituent agents and starts them in the correct order.
+The CLI runs the pipeline **stage by stage**. Only `doc_sorter` starts initially. The three dedup agents are not started at all until `doc_sorter` finishes — so there are no idle-polling threads sitting around waiting for jobs. When `doc_sorter` exits, the CLI immediately starts all three dedup agents in parallel. You'll see the stage progress printed to the terminal:
+
+```
+Pipeline 'doc_sort_pipeline' — Sort and deduplicate legal documents
+  2 stages: doc_sorter → [nda_deduplicator, msa_company_deduplicator, msa_thirdparty_deduplicator]
+
+Stage 1/2: doc_sorter
+  Starting doc_sorter
+  ...
+Stage 1 complete.
+
+Stage 2/2 (parallel): nda_deduplicator, msa_company_deduplicator, msa_thirdparty_deduplicator
+  Starting nda_deduplicator, msa_company_deduplicator, msa_thirdparty_deduplicator in parallel
+  ...
+Pipeline 'doc_sort_pipeline' complete.
+```
+
+Pressing Ctrl-C during any stage stops that stage and does not proceed to the next one.
 
 **With Ollama parallel requests enabled (recommended):**
 
@@ -384,7 +401,12 @@ secure-agents ui
 ```
 
 Open `http://localhost:8420`. The pipeline tile shows:
-- A progress bar (0% → 25% while sorting → 50–100% as each dedup agent finishes → 100%)
+- A progress bar that advances through five states:
+  - **0%** — pipeline not yet started
+  - **25%** — Stage 1 (`doc_sorter`) running
+  - **50%** — between stages (doc_sorter done, dedup agents not yet started)
+  - **50–99%** — Stage 2 running (advances as each dedup agent finishes its job)
+  - **100%** — all done
 - The serial → parallel stage layout with per-agent running indicators
 - Metrics tab: tick counts and latency for each agent
 - Outputs tab: `duplicates.csv` files for each category once dedup completes
@@ -392,10 +414,10 @@ Open `http://localhost:8420`. The pipeline tile shows:
 
 **What to expect:**
 
-1. The dashboard shows `doc_sorter` running (Stage 1). Category subfolders appear in `output_root` as files are classified.
-2. When sorting completes, `doc_sorter` emits jobs and exits. The three dedup agents start simultaneously (Stage 2).
-3. Each dedup agent extracts text, runs the Jaccard pre-filter, sends candidate pairs to the LLM, and writes `duplicates.csv`.
-4. When all three finish, the pipeline is complete. All agents have exited cleanly.
+1. The dashboard shows `doc_sorter` running (Stage 1, 25%). Category subfolders appear in `output_root` as files are classified. No dedup threads are alive yet.
+2. When sorting completes, `doc_sorter` emits one job per category and exits. The dashboard briefly shows 50% while the CLI transitions to Stage 2.
+3. All three dedup agents start simultaneously (Stage 2). Each extracts text, runs the Jaccard pre-filter, sends candidate pairs to the LLM, and writes `duplicates.csv`. The progress bar advances from 50% toward 99% as each agent finishes.
+4. When all three finish, the pipeline is complete (100%) and all threads have exited cleanly.
 
 ---
 
