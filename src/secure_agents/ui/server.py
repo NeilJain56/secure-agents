@@ -573,7 +573,24 @@ def get_metrics():
         total_ticks = 0
         total_errors = 0
 
-        # 1. Agents present in the persistent store (have had ≥10 ticks)
+        # Helper: check the job queue for pending/processing jobs for an agent.
+        # Used to distinguish "idle-polling" from "actively processing a job".
+        def _has_pending_job(agent_name: str) -> bool:
+            if _job_queue is None:
+                return False
+            try:
+                stats = _job_queue.get_stats(agent=agent_name)
+                return (stats.get("pending", 0) + stats.get("processing", 0)) > 0
+            except Exception:
+                return False
+
+        # Helper: get real uptime from the status file.
+        def _real_uptime(agent_name: str) -> float | None:
+            from secure_agents.core.agent_status import get_started_at
+            started_at = get_started_at(agent_name)
+            return round(now - started_at, 1) if started_at else None
+
+        # 1. Agents present in the persistent store (have had ≥10 ticks).
         for agent_name, row in latest.items():
             is_running = is_running_externally(agent_name)
             ticks = row.get("ticks") or 0
@@ -581,17 +598,28 @@ def get_metrics():
             latency_ms = row.get("latency_ms")
             total_ticks += ticks
             total_errors += errors
+
+            # Dedup agents idle-poll the queue every 5 s while waiting for a job.
+            # Distinguish that from actually processing a job so the UI is clear.
+            if is_running and latency_ms and latency_ms >= 4500:
+                # Tick time ≈ poll interval — agent is idle-waiting, not processing.
+                agent_status = "waiting" if not _has_pending_job(agent_name) else "processing"
+                display_latency = None  # hide poll-interval noise from latency column
+            else:
+                agent_status = "running" if is_running else "idle"
+                display_latency = {"mean_ms": latency_ms} if latency_ms else None
+
             agents_out[agent_name] = {
                 "ticks": ticks,
                 "errors": errors,
                 "error_rate_pct": round(errors / ticks * 100, 2) if ticks else 0,
                 "running": is_running,
-                "status": row.get("status", "unknown"),
-                "latency": {"mean_ms": latency_ms} if latency_ms else None,
+                "status": agent_status,
+                "latency": display_latency,
                 "last_recorded_at": row.get("ts"),
                 "starts": 0,
                 "stops": 0,
-                "uptime_s": round(now - row["ts"], 1) if row.get("ts") else None,
+                "uptime_s": _real_uptime(agent_name) if is_running else round(now - row["ts"], 1),
                 "run_count_today": 0,
                 "run_count_total": 0,
             }
@@ -611,7 +639,7 @@ def get_metrics():
                     "last_recorded_at": None,
                     "starts": 0,
                     "stops": 0,
-                    "uptime_s": None,
+                    "uptime_s": _real_uptime(agent_name),
                     "run_count_today": 0,
                     "run_count_total": 0,
                 }
@@ -732,6 +760,20 @@ def list_pipelines():
 
         progress_pct = _compute_pipeline_progress(pcfg, agent_statuses)
 
+        # Job queue stats: split by status so the UI shows meaningful numbers.
+        # pending + processing = active work; completed = historical.
+        queue_stats: dict[str, int] = {}
+        if _job_queue is not None:
+            try:
+                all_stats = _job_queue.get_stats()
+                # Aggregate per-agent stats for all agents in this pipeline
+                for aname in agent_names:
+                    per = _job_queue.get_stats(agent=aname)
+                    for status, count in per.items():
+                        queue_stats[status] = queue_stats.get(status, 0) + count
+            except Exception:
+                pass
+
         result.append({
             "name": name,
             "description": pcfg.get("description", ""),
@@ -740,6 +782,7 @@ def list_pipelines():
             "any_running": any_running,
             "stages": stages_response,
             "progress_pct": progress_pct,
+            "queue_stats": queue_stats,
         })
     return {"pipelines": result}
 

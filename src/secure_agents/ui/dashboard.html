@@ -286,6 +286,8 @@ main {
 .badge-setup .status-dot { background: var(--amber); }
 .badge-running { background: var(--green-soft); color: #15803d; }
 .badge-running .status-dot { background: var(--green); animation: pulse 2s infinite; }
+.badge-waiting { background: var(--amber-soft); color: #92400e; }
+.badge-waiting .status-dot { background: var(--amber); }
 .badge-error { background: var(--red-soft); color: #991b1b; }
 .badge-error .status-dot { background: var(--red); }
 
@@ -1762,6 +1764,14 @@ function renderPipelineTile(pipeline) {
         <div class="pipeline-footer">
           <span class="pipeline-stats">
             ${runningCount}/${total} agents running
+            ${(() => {
+              const qs = pipeline.queue_stats || {};
+              const active = (qs.pending || 0) + (qs.processing || 0);
+              const done   = qs.completed || 0;
+              if (active > 0) return ` &bull; <span style="color:var(--accent)">${active} job${active !== 1 ? 's' : ''} queued</span>`;
+              if (done  > 0) return ` &bull; <span style="color:var(--text-3)">${done} job${done !== 1 ? 's' : ''} done</span>`;
+              return '';
+            })()}
           </span>
           ${actionBtn}
         </div>
@@ -2190,22 +2200,38 @@ function renderMetrics() {
 
   for (const name of agentNames) {
     const a = m.agents[name];
-    const statusBadge = a.running
-      ? `<span class="status-badge badge-running" style="font-size:11px;padding:2px 8px"><span class="status-dot"></span>Running</span>`
-      : `<span class="status-badge badge-ready" style="font-size:11px;padding:2px 8px;background:var(--bg);color:var(--text-3)"><span class="status-dot" style="background:var(--text-3)"></span>Stopped</span>`;
+
+    // Status badge: distinguish running-doing-work, waiting-for-job, and stopped
+    let statusBadge;
+    if (!a.running) {
+      statusBadge = `<span class="status-badge badge-ready" style="font-size:11px;padding:2px 8px;background:var(--bg);color:var(--text-3)"><span class="status-dot" style="background:var(--text-3)"></span>Stopped</span>`;
+    } else if (a.status === 'waiting') {
+      statusBadge = `<span class="status-badge badge-waiting" style="font-size:11px;padding:2px 8px" title="Alive, waiting for a job from the queue"><span class="status-dot"></span>Waiting</span>`;
+    } else {
+      statusBadge = `<span class="status-badge badge-running" style="font-size:11px;padding:2px 8px"><span class="status-dot"></span>Running</span>`;
+    }
+
+    // Ticks: single-run agents (doc_sorter) do 1 long tick and never flush; show clearly
+    const ticksDisplay = (a.ticks === 0 && a.running && a.status !== 'waiting')
+      ? `<span class="text-muted" title="Single-run agent — accumulates after completion">in progress</span>`
+      : formatNumber(a.ticks);
 
     const errorRateClass = a.error_rate_pct > 5 ? ' style="color:var(--red);font-weight:600"' : (a.error_rate_pct === 0 ? ' class="text-muted"' : '');
+
+    // p50/p95 only available from in-memory snapshot; store fallback has mean_ms only
+    const p50 = a.latency ? (a.latency.p50_ms != null ? formatMs(a.latency.p50_ms) : formatMs(a.latency.mean_ms)) : '<span class="text-muted">--</span>';
+    const p95 = a.latency ? (a.latency.p95_ms != null ? formatMs(a.latency.p95_ms) : '<span class="text-muted">--</span>') : '<span class="text-muted">--</span>';
 
     html += `
       <tr>
         <td style="font-weight:550">${esc(formatName(name))}</td>
         <td>${statusBadge}</td>
         <td class="mono">${formatUptime(a.uptime_s)}</td>
-        <td class="mono">${formatNumber(a.ticks)}</td>
+        <td class="mono">${ticksDisplay}</td>
         <td class="mono"${a.errors > 0 ? ' style="color:var(--red)"' : ''}>${formatNumber(a.errors)}</td>
         <td class="mono"${errorRateClass}>${a.error_rate_pct.toFixed(1)}%</td>
-        <td class="mono">${a.latency ? formatMs(a.latency.p50_ms) : '<span class="text-muted">--</span>'}</td>
-        <td class="mono">${a.latency ? formatMs(a.latency.p95_ms) : '<span class="text-muted">--</span>'}</td>
+        <td class="mono">${p50}</td>
+        <td class="mono">${p95}</td>
       </tr>`;
   }
 

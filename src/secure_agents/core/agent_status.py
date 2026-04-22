@@ -83,3 +83,17 @@ def list_external() -> list[str]:
     except Exception:
         pass
     return result
+
+
+def get_started_at(agent_name: str) -> float | None:
+    """Return the unix timestamp when *agent_name* was started, or None.
+
+    Reads from the status file written by ``write_status()``.  Returns None
+    if the agent is not running or the file cannot be read.
+    """
+    path = _dir() / f"{agent_name}.json"
+    try:
+        data = json.loads(path.read_text())
+        return data.get("started_at")
+    except Exception:
+        return None
