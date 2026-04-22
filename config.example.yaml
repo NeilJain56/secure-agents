@@ -208,3 +208,19 @@ agents:
     tools:
       - text_extractor
       - file_manager
+
+# ─── Pipelines ───────────────────────────────────────────────────────────────
+# A pipeline groups multiple agents into a single named unit.
+# In the CLI:   secure-agents start doc_sort_pipeline
+# In the UI:    appears as one tile with a single Run/Stop button
+#
+# Pipelines are purely organizational — agents still communicate through
+# the shared job queue (doc_sorter emits jobs to the 3 dedup agents).
+pipelines:
+  doc_sort_pipeline:
+    description: Sort and deduplicate legal documents (NDA, MSA company, MSA third-party)
+    agents:
+      - doc_sorter
+      - nda_deduplicator
+      - msa_company_deduplicator
+      - msa_thirdparty_deduplicator

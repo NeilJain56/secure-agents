@@ -124,7 +124,29 @@ def start(ctx, agent_names):
     config = load_config(ctx.obj["config_path"])
 
     if agent_names:
-        names = list(agent_names)
+        # Expand any pipeline names into their constituent agents
+        raw_names = list(agent_names)
+        names = []
+        pipelines = getattr(config, "pipelines", {}) or {}
+        for name in raw_names:
+            if name in pipelines:
+                pipeline_agents = pipelines[name].get("agents", [])
+                desc = pipelines[name].get("description", "")
+                click.echo(
+                    f"Pipeline '{name}'" + (f" — {desc}" if desc else "")
+                    + f" → {', '.join(pipeline_agents)}"
+                )
+                names.extend(pipeline_agents)
+            else:
+                names.append(name)
+        # De-duplicate while preserving order
+        seen: set[str] = set()
+        deduped = []
+        for n in names:
+            if n not in seen:
+                seen.add(n)
+                deduped.append(n)
+        names = deduped
     else:
         # Start all enabled agents
         names = [
@@ -156,8 +178,24 @@ def start(ctx, agent_names):
 
 
 @main.command(name="list")
-def list_plugins():
-    """List all registered agents, tools, and providers."""
+@click.pass_context
+def list_plugins(ctx):
+    """List all registered agents, tools, providers, and pipelines."""
+    try:
+        config = load_config(ctx.obj["config_path"])
+        pipelines = getattr(config, "pipelines", {}) or {}
+    except Exception:
+        pipelines = {}
+
+    if pipelines:
+        click.echo("Pipelines:")
+        for name, pcfg in pipelines.items():
+            desc = pcfg.get("description", "")
+            agents = pcfg.get("agents", [])
+            click.echo(f"  - {name}" + (f": {desc}" if desc else ""))
+            click.echo(f"    agents: {' → '.join(agents)}")
+        click.echo()
+
     click.echo("Agents:")
     for name in registry.list_agents():
         cls = registry.get_agent(name)

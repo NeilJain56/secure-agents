@@ -128,12 +128,16 @@ class AppConfig(BaseModel):
     - ``provider``: LLM provider selection and settings (local providers only)
     - ``queue``: job queue settings
     - ``agents``: per-agent config dicts; each inherits from defaults then overrides
+    - ``pipelines``: named multi-agent pipelines (shown as a single tile in the dashboard
+      and invocable as a single name in the CLI).  Each pipeline has a ``description``
+      and an ordered list of ``agents`` that belong to it.
     """
     defaults: dict[str, Any] = {}
     provider: ProviderConfig = ProviderConfig()
     queue: QueueConfig = QueueConfig()
     credentials: CredentialsConfig = CredentialsConfig()
     agents: dict[str, dict[str, Any]] = {}
+    pipelines: dict[str, dict[str, Any]] = {}
     max_workers: int = 4  # global maximum concurrent agent threads
 
     def get_agent_config(self, agent_name: str) -> dict[str, Any]:

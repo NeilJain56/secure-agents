@@ -541,6 +541,75 @@ def get_metrics():
     return metrics.snapshot()
 
 
+# ── Pipeline endpoints ────────────────────────────────────────────────────────
+
+def _pipeline_agent_status(agent_name: str) -> dict:
+    """Return running status + health summary for one agent within a pipeline."""
+    is_running = (
+        agent_name in _running_agents
+        and _running_agents[agent_name]["thread"].is_alive()
+    )
+    return {"name": agent_name, "running": is_running}
+
+
+@app.get("/api/pipelines")
+def list_pipelines():
+    """List all configured pipelines with per-agent run status."""
+    config = _reload_config()
+    pipelines_cfg = getattr(config, "pipelines", {}) or {}
+    result = []
+    for name, pcfg in pipelines_cfg.items():
+        agent_names = pcfg.get("agents", [])
+        agent_statuses = [_pipeline_agent_status(a) for a in agent_names]
+        all_running = bool(agent_statuses) and all(s["running"] for s in agent_statuses)
+        any_running = any(s["running"] for s in agent_statuses)
+        result.append({
+            "name": name,
+            "description": pcfg.get("description", ""),
+            "agents": agent_statuses,
+            "all_running": all_running,
+            "any_running": any_running,
+        })
+    return {"pipelines": result}
+
+
+@app.post("/api/pipelines/{pipeline_name}/start")
+async def start_pipeline(pipeline_name: str, request: Request):
+    """Start all agents belonging to a pipeline."""
+    await _check_auth(request)
+    config = _reload_config()
+    pipelines_cfg = getattr(config, "pipelines", {}) or {}
+    if pipeline_name not in pipelines_cfg:
+        raise HTTPException(404, "Pipeline not found")
+
+    agent_names = pipelines_cfg[pipeline_name].get("agents", [])
+    req = StartRequest(agents=agent_names)
+    # Reuse the existing start_agents logic
+    return await start_agents(req, request)
+
+
+@app.post("/api/pipelines/{pipeline_name}/stop")
+async def stop_pipeline(pipeline_name: str, request: Request):
+    """Stop all running agents belonging to a pipeline."""
+    await _check_auth(request)
+    config = _reload_config()
+    pipelines_cfg = getattr(config, "pipelines", {}) or {}
+    if pipeline_name not in pipelines_cfg:
+        raise HTTPException(404, "Pipeline not found")
+
+    agent_names = pipelines_cfg[pipeline_name].get("agents", [])
+    stopped = []
+    for agent_name in agent_names:
+        if agent_name in _running_agents:
+            entry = _running_agents.get(agent_name)
+            if entry and entry["thread"].is_alive():
+                entry["agent"].request_stop()
+                entry["thread"].join(timeout=5.0)
+                _running_agents.pop(agent_name, None)
+                stopped.append(agent_name)
+    return {"stopped": stopped, "pipeline": pipeline_name}
+
+
 # ── Agent toggle / logs / outputs ────────────────────────────────────────────
 
 @app.patch("/api/agents/{agent_name}/toggle")
