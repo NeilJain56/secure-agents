@@ -1,0 +1,52 @@
+[
+  {
+    "id": "ip_government",
+    "title": "IP / Government Grants",
+    "text": "The company has not developed any intellectual property as part of a government grant or contract except as disclosed on the applicable disclosure schedule."
+  },
+  {
+    "id": "exclusive_licenses_out",
+    "title": "Exclusive Licenses Granted",
+    "text": "The company has not granted any exclusive license to any intellectual property owned by the company except as set forth on the applicable disclosure schedule."
+  },
+  {
+    "id": "exclusive_licenses_in",
+    "title": "Exclusive Licenses Received",
+    "text": "The company is not a party to any agreement granting the company an exclusive license to any intellectual property owned by a third party except as set forth on the applicable disclosure schedule."
+  },
+  {
+    "id": "ip_assignment",
+    "title": "IP Assignment / Work for Hire",
+    "text": "All intellectual property created by the company's employees, contractors, or consultants in the course of their engagement has been duly assigned to the company, and the company has no knowledge of any challenge to such assignment."
+  },
+  {
+    "id": "change_of_control",
+    "title": "Change of Control Provisions",
+    "text": "No contract to which the company is a party contains any change-of-control provision, right of first refusal, right of first negotiation, or consent right that would be triggered by, or would give any counterparty the right to terminate or modify such contract as a result of, the transactions contemplated by this agreement."
+  },
+  {
+    "id": "non_compete",
+    "title": "Non-Compete / Non-Solicitation",
+    "text": "The company is not a party to any agreement that restricts the company from competing in any market, soliciting any customers or employees, or engaging in any line of business, except as disclosed on the applicable disclosure schedule."
+  },
+  {
+    "id": "material_contracts",
+    "title": "Material Contracts",
+    "text": "Except as set forth on the applicable disclosure schedule, the company is not a party to any contract with an annual value exceeding $100,000 or with a remaining term exceeding one year that is not terminable by the company on 90 days' notice or less without penalty."
+  },
+  {
+    "id": "related_party",
+    "title": "Related-Party Transactions",
+    "text": "Except as disclosed on the applicable disclosure schedule, no officer, director, employee, or stockholder of the company (or any family member or affiliate of any of the foregoing) is a party to any contract or other arrangement with the company."
+  },
+  {
+    "id": "data_privacy",
+    "title": "Data Privacy / Processing",
+    "text": "The company has disclosed all agreements under which it processes, stores, or transmits personal data on behalf of third parties, including any data processing agreements, data sharing agreements, or sub-processor agreements."
+  },
+  {
+    "id": "source_code_escrow",
+    "title": "Source Code Escrow / Access",
+    "text": "The company is not a party to any agreement that (i) requires the company to place source code in escrow, (ii) grants any third party a contingent right to access or use the company's source code, or (iii) restricts the company's rights to modify or distribute its own source code."
+  }
+]

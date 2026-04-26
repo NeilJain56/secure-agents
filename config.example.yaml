@@ -209,25 +209,44 @@ agents:
       - text_extractor
       - file_manager
 
+  reps_reviewer:
+    enabled: true
+    # JSON file with reps & warranties to evaluate against.
+    # Each entry: {id, title, text}
+    # Use data/sample_reps.json to test; replace with the real purchase agreement reps.
+    reps_file: ./src/secure_agents/agents/reps_reviewer/sample_reps.json
+    output_root: ./ai_generated
+    output_file: reps_analysis.xlsx
+    review_workers: 2    # parallel LLM calls (one per contract)
+    max_chars: 4000      # chars of contract text sent to LLM per call
+    tools:
+      - text_extractor
+      - file_manager
+
 # ─── Pipelines ───────────────────────────────────────────────────────────────
 # A pipeline groups multiple agents into a single named unit.
 # In the CLI:   secure-agents start doc_sort_pipeline
 # In the UI:    appears as one tile with a single Run/Stop button
 #
-# Pipelines are purely organizational — agents still communicate through
-# the shared job queue (doc_sorter emits jobs to the 3 dedup agents).
+# Pipelines run stage-by-stage.  Each stage's agents run in parallel.
+# The next stage only starts after all agents in the current stage finish.
 #
-# Optional `stages` field: describes the serial/parallel execution topology
-# for dashboard visualization and progress tracking.  Each list entry is one
-# stage; agents within a stage run in parallel.
+# Stage entries can be:
+#   - A list of agent names: runs those agents in parallel
+#   - A confirm dict: pauses and waits for human approval before continuing
+#       confirm: "Message to show the reviewer"
+#     Approval can come from the terminal (type y + Enter) or the dashboard.
 pipelines:
   doc_sort_pipeline:
-    description: Sort and deduplicate legal documents (NDA, MSA company, MSA third-party)
+    description: Sort, deduplicate, and review contracts against reps & warranties
     agents:
       - doc_sorter
       - nda_deduplicator
       - msa_company_deduplicator
       - msa_thirdparty_deduplicator
+      - reps_reviewer
     stages:
       - [doc_sorter]
       - [nda_deduplicator, msa_company_deduplicator, msa_thirdparty_deduplicator]
+      - confirm: "Stage 2 complete. Review duplicates.csv in each category folder before proceeding to reps & warranties analysis."
+      - [reps_reviewer]

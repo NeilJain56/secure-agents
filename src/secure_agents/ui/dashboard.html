@@ -995,6 +995,23 @@ footer {
   vertical-align: middle;
 }
 
+/* ─── Gate approval banner ──────────────────────────────────────── */
+.gate-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 12px 0 4px;
+}
+.gate-banner-icon { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
+.gate-banner-body { flex: 1; min-width: 0; }
+.gate-banner-title { font-size: 12px; font-weight: 650; color: #92400e; margin-bottom: 3px; }
+.gate-banner-msg { font-size: 12px; color: #78350f; line-height: 1.5; }
+.gate-banner-actions { display: flex; gap: 8px; margin-top: 10px; }
+
 /* ─── Pipeline Tile ─────────────────────────────────────────────── */
 .pipelines-section { margin-bottom: 12px; }
 .pipelines-section-title {
@@ -1678,9 +1695,15 @@ function renderPipelineTile(pipeline) {
   const total = pipeline.agents.length;
   const progressPct = pipeline.progress_pct != null ? pipeline.progress_pct : 0;
 
+  const gatePending = pipeline.gate_pending;
+  const gateMessage = pipeline.gate_message || 'Review and confirm to continue.';
+
   let tileClass = 'pipeline-tile';
   let badge;
-  if (allRunning) {
+  if (gatePending) {
+    tileClass += ' partial';
+    badge = `<span class="status-badge badge-waiting"><span class="status-dot"></span>Awaiting Approval</span>`;
+  } else if (allRunning) {
     tileClass += ' running';
     badge = `<span class="status-badge badge-running"><span class="status-dot"></span>Running</span>`;
   } else if (anyRunning) {
@@ -1728,8 +1751,29 @@ function renderPipelineTile(pipeline) {
       </div>`;
   }
 
+  // Gate banner — shown when pipeline is paused at a confirm step
+  const gateBannerHtml = gatePending ? `
+    <div class="gate-banner">
+      <div class="gate-banner-icon">⏸</div>
+      <div class="gate-banner-body">
+        <div class="gate-banner-title">Confirmation required</div>
+        <div class="gate-banner-msg">${esc(gateMessage)}</div>
+        <div class="gate-banner-actions">
+          <button class="btn btn-primary btn-sm" onclick="resolveGate('${esc(pipeline.name)}', true)">
+            ✓ Continue
+          </button>
+          <button class="btn btn-danger btn-sm" onclick="resolveGate('${esc(pipeline.name)}', false)">
+            ✗ Stop Pipeline
+          </button>
+        </div>
+      </div>
+    </div>` : '';
+
   let actionBtn;
-  if (allRunning) {
+  if (gatePending) {
+    // While waiting at a gate, don't show start/stop — gate buttons are the action
+    actionBtn = '';
+  } else if (allRunning) {
     actionBtn = `<button class="btn btn-danger btn-sm" onclick="stopPipeline('${esc(pipeline.name)}')">
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
       Stop Pipeline
@@ -1760,6 +1804,7 @@ function renderPipelineTile(pipeline) {
       </div>
       <div class="pipeline-body">
         ${flowHtml}
+        ${gateBannerHtml}
         ${progressHtml}
         <div class="pipeline-footer">
           <span class="pipeline-stats">
@@ -1816,6 +1861,24 @@ async function stopPipeline(name) {
     await fetchAgents();
   } catch (e) {
     toast('Failed to stop pipeline', 'error');
+  }
+}
+
+async function resolveGate(name, approved) {
+  try {
+    const res = await fetch(`/api/pipelines/${encodeURIComponent(name)}/gate`, {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approved }),
+    });
+    if (res.ok) {
+      toast(approved ? 'Pipeline continuing…' : 'Pipeline stopped at gate', approved ? 'success' : 'error');
+      await fetchAgents();
+    } else {
+      toast('Failed to resolve gate', 'error');
+    }
+  } catch (e) {
+    toast('Failed to resolve gate', 'error');
   }
 }
 

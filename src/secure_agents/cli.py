@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import select
 import signal
+import sys
 import threading
+import time
 from pathlib import Path
 
 import click
 import structlog
 
 from secure_agents.core.agent_status import (
+    clear_gate,
     clear_pipeline_status,
     clear_status,
+    consume_gate_approval,
+    write_gate,
+    write_gate_approval,
     write_pipeline_status,
     write_status,
 )
@@ -115,6 +122,63 @@ def _run_agents(agent_names: list[str], config, abort: threading.Event | None = 
     return True
 
 
+def _handle_confirm_gate(
+    pipeline_name: str, message: str, abort: threading.Event
+) -> bool:
+    """Pause the pipeline and wait for human approval — terminal or dashboard.
+
+    Writes a gate status file so the dashboard can surface a confirmation
+    prompt.  Polls simultaneously for:
+      - A line typed in the terminal (y/yes/Enter = proceed; anything else = stop)
+      - An approval file written by the dashboard's approve/reject button
+      - The shared abort event (Ctrl-C)
+
+    Returns True to proceed, False to stop.
+    """
+    write_gate(pipeline_name, message)
+
+    sep = "─" * 60
+    click.echo(f"\n{sep}")
+    click.echo(f"⏸  {message}")
+    click.echo(f"   Type [y] + Enter to continue, [n] + Enter to stop.")
+    click.echo(f"   Or use the dashboard to approve / reject.")
+    click.echo(f"{sep}\n")
+    sys.stdout.flush()
+
+    try:
+        while not abort.is_set():
+            # Check for dashboard-driven approval
+            decision = consume_gate_approval(pipeline_name)
+            if decision is not None:
+                if decision:
+                    click.echo("✓  Approved via dashboard. Continuing...\n")
+                else:
+                    click.echo("✗  Rejected via dashboard. Pipeline stopped.\n")
+                return decision
+
+            # Check stdin (non-blocking, only on interactive terminals)
+            if sys.stdin.isatty():
+                try:
+                    r, _, _ = select.select([sys.stdin], [], [], 0.4)
+                    if r:
+                        line = sys.stdin.readline().strip().lower()
+                        proceed = line in ("y", "yes", "")
+                        if proceed:
+                            click.echo("Continuing...\n")
+                        else:
+                            click.echo("Pipeline stopped.\n")
+                        return proceed
+                except (OSError, ValueError):
+                    pass
+            else:
+                # Non-interactive — only watch for file-based approval
+                abort.wait(timeout=0.4)
+
+        return False
+    finally:
+        clear_gate(pipeline_name)
+
+
 def _run_pipeline(pipeline_name: str, pipeline_cfg: dict, config) -> None:
     """Run a pipeline stage-by-stage.
 
@@ -132,34 +196,59 @@ def _run_pipeline(pipeline_name: str, pipeline_cfg: dict, config) -> None:
         return
 
     desc = pipeline_cfg.get("description", "")
+
+    # Build summary, skipping confirm gates for the stage count / label
+    agent_stages = [s for s in stages if isinstance(s, list)]
     stage_summary = " → ".join(
         f"[{', '.join(s)}]" if len(s) > 1 else s[0]
-        for s in stages
+        for s in agent_stages
     )
     click.echo(f"Pipeline '{pipeline_name}'" + (f" — {desc}" if desc else ""))
-    click.echo(f"  {len(stages)} stage{'s' if len(stages) != 1 else ''}: {stage_summary}\n")
+    click.echo(
+        f"  {len(agent_stages)} stage{'s' if len(agent_stages) != 1 else ''}: "
+        f"{stage_summary}\n"
+    )
 
     abort = threading.Event()
 
     def _signal_handler(sig, frame):
         click.echo(f"\nAborting pipeline '{pipeline_name}'...")
+        # If a gate is waiting for approval, write a rejection so the polling
+        # loop in _handle_confirm_gate exits cleanly.
+        write_gate_approval(pipeline_name, False)
         abort.set()
 
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
     write_pipeline_status(pipeline_name)
+    agent_stage_idx = 0  # counts only agent stages for display
     try:
-        for i, stage_agents in enumerate(stages, start=1):
+        for stage in stages:
             if abort.is_set():
                 break
-            parallel_note = " (parallel)" if len(stage_agents) > 1 else ""
-            click.echo(f"Stage {i}/{len(stages)}{parallel_note}: {', '.join(stage_agents)}")
-            ok = _run_agents(stage_agents, config, abort=abort)
+
+            # ── Confirm gate ──────────────────────────────────────────────
+            if isinstance(stage, dict) and "confirm" in stage:
+                ok = _handle_confirm_gate(pipeline_name, stage["confirm"], abort)
+                if not ok:
+                    click.echo("Pipeline stopped at confirmation gate.")
+                    return
+                continue
+
+            # ── Agent stage ───────────────────────────────────────────────
+            agent_stage_idx += 1
+            total_agent_stages = len(agent_stages)
+            parallel_note = " (parallel)" if len(stage) > 1 else ""
+            click.echo(
+                f"Stage {agent_stage_idx}/{total_agent_stages}{parallel_note}: "
+                f"{', '.join(stage)}"
+            )
+            ok = _run_agents(stage, config, abort=abort)
             if not ok:
-                click.echo(f"\nPipeline aborted at stage {i}.")
+                click.echo(f"\nPipeline aborted at stage {agent_stage_idx}.")
                 return
-            click.echo(f"Stage {i} complete.\n")
+            click.echo(f"Stage {agent_stage_idx} complete.\n")
     finally:
         clear_pipeline_status(pipeline_name)
 

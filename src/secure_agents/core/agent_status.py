@@ -105,6 +105,56 @@ def get_pipeline_started_at(pipeline_name: str) -> float | None:
     return get_started_at(f"_pipeline_{pipeline_name}")
 
 
+def write_gate(pipeline_name: str, message: str) -> None:
+    """Write a confirmation gate file — pipeline is paused waiting for approval."""
+    path = _dir() / f"_gate_{pipeline_name}.json"
+    path.write_text(json.dumps({
+        "pending": True,
+        "message": message,
+        "started_at": time.time(),
+    }))
+
+
+def clear_gate(pipeline_name: str) -> None:
+    """Remove the gate file after the gate is resolved."""
+    try:
+        (_dir() / f"_gate_{pipeline_name}.json").unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def get_gate(pipeline_name: str) -> dict | None:
+    """Return gate state dict if a confirmation gate is pending, else None."""
+    path = _dir() / f"_gate_{pipeline_name}.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+        return data if data.get("pending") else None
+    except Exception:
+        return None
+
+
+def write_gate_approval(pipeline_name: str, approved: bool) -> None:
+    """Write an approval/rejection file for the dashboard → CLI signal."""
+    path = _dir() / f"_gate_approve_{pipeline_name}.json"
+    path.write_text(json.dumps({"approved": approved, "at": time.time()}))
+
+
+def consume_gate_approval(pipeline_name: str) -> bool | None:
+    """Read and delete the approval file.  Returns True/False/None (no file)."""
+    path = _dir() / f"_gate_approve_{pipeline_name}.json"
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+        path.unlink(missing_ok=True)
+        return bool(data.get("approved"))
+    except Exception:
+        path.unlink(missing_ok=True)
+        return None
+
+
 def get_started_at(agent_name: str) -> float | None:
     """Return the unix timestamp when *agent_name* was started, or None.
 

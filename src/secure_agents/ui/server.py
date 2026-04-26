@@ -33,9 +33,11 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel
 
 from secure_agents.core.agent_status import (
+    get_gate,
     get_pipeline_started_at,
     is_pipeline_running,
     is_running_externally,
+    write_gate_approval,
 )
 from secure_agents.core.builder import build_agent, discover_all
 from secure_agents.core.config import load_config, AppConfig, validate_agent_name
@@ -691,7 +693,10 @@ def _compute_pipeline_progress(pipeline_name: str, pcfg: dict, agent_statuses: l
       50–99% — stage 2 running; each finished agent adds (50/N)%
       100% — all done (no agents running, no pending jobs)
     """
-    stages = pcfg.get("stages")
+    # Filter out confirm-gate dicts — only agent-list stages drive progress
+    all_stages = pcfg.get("stages") or []
+    stages = [s for s in all_stages if isinstance(s, list)]
+
     if not stages or len(stages) < 2:
         # No stage topology — simple running fraction
         running_count = sum(1 for s in agent_statuses if s["running"])
@@ -761,15 +766,18 @@ def list_pipelines():
         all_running = bool(agent_statuses) and all(s["running"] for s in agent_statuses)
         any_running = any(s["running"] for s in agent_statuses)
 
-        # Build stages response: list of lists of agent status objects
-        raw_stages = pcfg.get("stages")
+        # Build stages response: list of lists of agent status objects.
+        # Confirm-gate dicts are stripped — the gate state is surfaced
+        # separately via the gate_pending / gate_message fields.
+        raw_stages = pcfg.get("stages") or []
         stages_response: list[list[dict]] | None = None
         if raw_stages:
             by_name = {s["name"]: s for s in agent_statuses}
             stages_response = [
                 [by_name[a] for a in stage if a in by_name]
                 for stage in raw_stages
-            ]
+                if isinstance(stage, list)
+            ] or None
 
         progress_pct = _compute_pipeline_progress(name, pcfg, agent_statuses)
 
@@ -787,6 +795,9 @@ def list_pipelines():
             except Exception:
                 pass
 
+        # Check for a pending confirmation gate
+        gate = get_gate(name)
+
         result.append({
             "name": name,
             "description": pcfg.get("description", ""),
@@ -796,6 +807,8 @@ def list_pipelines():
             "stages": stages_response,
             "progress_pct": progress_pct,
             "queue_stats": queue_stats,
+            "gate_pending": gate is not None,
+            "gate_message": gate["message"] if gate else None,
         })
     return {"pipelines": result}
 
@@ -835,6 +848,23 @@ async def stop_pipeline(pipeline_name: str, request: Request):
                 _running_agents.pop(agent_name, None)
                 stopped.append(agent_name)
     return {"stopped": stopped, "pipeline": pipeline_name}
+
+
+class GateDecisionRequest(BaseModel):
+    approved: bool
+
+
+@app.post("/api/pipelines/{pipeline_name}/gate")
+async def resolve_pipeline_gate(
+    pipeline_name: str, req: GateDecisionRequest, request: Request
+):
+    """Approve or reject a pipeline confirmation gate from the dashboard."""
+    await _check_auth(request)
+    pipelines_cfg = getattr(_get_config(), "pipelines", {}) or {}
+    if pipeline_name not in pipelines_cfg:
+        raise HTTPException(404, "Pipeline not found")
+    write_gate_approval(pipeline_name, req.approved)
+    return {"pipeline": pipeline_name, "approved": req.approved}
 
 
 # ── Agent toggle / logs / outputs ────────────────────────────────────────────
