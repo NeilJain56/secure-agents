@@ -54,8 +54,11 @@ provider:
 
   ollama:
     host: http://localhost:11434
-    model: llama3.2
+    model: llama3.2        # 3B — fast and works well with schema-constrained output
     temperature: 0.1
+    # num_predict: 2000    # Optional: cap output tokens per call.  -1 = unlimited.
+    #                      # Large-schema agents (reps_reviewer) need ~1500-2000.
+    #                      # Small-schema agents (deduplicators) work fine unlimited.
 
   # llama.cpp server (./server -m model.gguf)
   llamacpp:
@@ -213,11 +216,12 @@ agents:
     enabled: true
     # JSON file with reps & warranties to evaluate against.
     # Each entry: {id, title, text}
-    # Use data/sample_reps.json to test; replace with the real purchase agreement reps.
+    # Use sample_reps.json to test; replace with the real purchase agreement reps.
     reps_file: ./src/secure_agents/agents/reps_reviewer/sample_reps.json
     output_root: ./ai_generated
     output_file: reps_analysis.xlsx
-    review_workers: 2    # parallel LLM calls (one per contract)
+    review_workers: 1    # Keep at 1 on a single local machine — parallel calls
+                         # compete for the same GPU and cause timeout errors.
     max_chars: 4000      # chars of contract text sent to LLM per call
     tools:
       - text_extractor

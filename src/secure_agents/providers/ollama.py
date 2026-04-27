@@ -48,6 +48,16 @@ class OllamaProvider(BaseProvider):
         model = self.get_model(model)
         temp = self.get_temperature(temperature)
 
+        # num_predict: cap output tokens.  -1 = unlimited (Ollama default).
+        # Agents with small schemas (deduplicator: ~100 tok) can set a low
+        # value for speed; agents with large schemas (reps_reviewer: ~1500 tok)
+        # should leave this unset or set it high.
+        num_predict: int = int(self.config.get("num_predict", -1))
+
+        options: dict = {"temperature": temp}
+        if num_predict != -1:
+            options["num_predict"] = num_predict
+
         payload: dict = {
             "model": model,
             "messages": [
@@ -55,16 +65,7 @@ class OllamaProvider(BaseProvider):
                 for m in messages
             ],
             "stream": False,
-            "options": {
-                "temperature": temp,
-                # Cap output tokens so structured-output calls never stall.
-                # Our JSON outputs have: category/is_similar key (~5 tok),
-                # confidence (~5 tok), reasoning up to 300 chars (~75 tok),
-                # plus JSON syntax (~20 tok) = ~105 tokens max.
-                # Benchmarked at 100: always produces valid JSON, ~8-10s/call.
-                # 150 was safe but wasted ~2s of generation per call.
-                "num_predict": 100,
-            },
+            "options": options,
         }
 
         # Structured output: schema takes precedence over plain json_mode
@@ -76,7 +77,7 @@ class OllamaProvider(BaseProvider):
         response = httpx.post(
             f"{self.host}/api/chat",
             json=payload,
-            timeout=120.0,
+            timeout=300.0,
         )
         response.raise_for_status()
         data = response.json()

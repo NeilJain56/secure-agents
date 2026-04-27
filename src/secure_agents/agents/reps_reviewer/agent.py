@@ -203,7 +203,9 @@ class RepsReviewerAgent(BaseAgent):
     ) -> dict | None:
         """Run one LLM call evaluating a contract against all reps.
 
-        Returns a result dict or None on failure.
+        Returns a result dict or None on failure.  If the first call produces
+        invalid JSON (e.g. output was truncated by a token cap), we retry once
+        with half the contract text so the response stays within limits.
         """
         text_ext = self.get_tool("text_extractor")
 
@@ -216,47 +218,66 @@ class RepsReviewerAgent(BaseAgent):
             )
             return None
 
-        text = extract["text"][:self.max_chars]
-        if not text.strip():
+        full_text = extract["text"]
+        if not full_text.strip():
             logger.warning("reps_reviewer.empty_text", filename=contract["filename"])
             return None
 
-        messages = (
-            MessageBuilder(SYSTEM_PROMPT)
-            .add_instruction(build_review_instruction(reps))
-            .add_untrusted("contract", text)
-            .build()
-        )
-
-        try:
-            response = self.provider.complete(
-                messages, response_schema=REPS_ANALYSIS_SCHEMA
+        # Attempt with progressively shorter text: full max_chars, then half.
+        for attempt, char_limit in enumerate([self.max_chars, self.max_chars // 2], 1):
+            text = full_text[:char_limit]
+            messages = (
+                MessageBuilder(SYSTEM_PROMPT)
+                .add_instruction(build_review_instruction(reps))
+                .add_untrusted("contract", text)
+                .build()
             )
-        except Exception:
-            logger.exception(
-                "reps_reviewer.llm_error", filename=contract["filename"]
-            )
-            return None
 
-        ok, parsed = validate_schema(response.content, REPS_ANALYSIS_SCHEMA)
-        if not ok:
-            # Try normalising confidence percentages
             try:
-                raw = json.loads(response.content)
-                for item in raw.get("results", []):
-                    c = item.get("confidence")
-                    if isinstance(c, (int, float)) and c > 1.0:
-                        item["confidence"] = c / 100.0
-                ok, parsed = validate_schema(json.dumps(raw), REPS_ANALYSIS_SCHEMA)
-            except Exception:
-                pass
-            if not ok:
-                logger.warning(
-                    "reps_reviewer.schema_invalid",
-                    filename=contract["filename"],
-                    error=parsed,
+                response = self.provider.complete(
+                    messages, response_schema=REPS_ANALYSIS_SCHEMA
                 )
+            except Exception:
+                logger.exception(
+                    "reps_reviewer.llm_error",
+                    filename=contract["filename"],
+                    attempt=attempt,
+                )
+                if attempt == 1:
+                    continue  # retry with shorter text
                 return None
+
+            ok, parsed = validate_schema(response.content, REPS_ANALYSIS_SCHEMA)
+            if not ok:
+                # Try normalising confidence percentages (some models emit 0-100)
+                try:
+                    raw = json.loads(response.content)
+                    for item in raw.get("results", []):
+                        c = item.get("confidence")
+                        if isinstance(c, (int, float)) and c > 1.0:
+                            item["confidence"] = c / 100.0
+                    ok, parsed = validate_schema(json.dumps(raw), REPS_ANALYSIS_SCHEMA)
+                except Exception:
+                    pass
+
+            if ok:
+                if attempt > 1:
+                    logger.info(
+                        "reps_reviewer.retry_succeeded",
+                        filename=contract["filename"],
+                        char_limit=char_limit,
+                    )
+                break
+
+            logger.warning(
+                "reps_reviewer.schema_invalid",
+                filename=contract["filename"],
+                attempt=attempt,
+                error=parsed,
+            )
+            if attempt == 1:
+                continue  # retry with shorter text
+            return None
 
         # Index results by rep_id
         rep_results = {r["rep_id"]: r for r in parsed["results"]}

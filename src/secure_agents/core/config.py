@@ -68,6 +68,7 @@ class ProviderSettings(BaseModel):
     host: str = ""
     model: str = ""
     temperature: float = 0.1
+    num_predict: int = -1   # max output tokens; -1 = unlimited (Ollama default)
 
 
 class ProviderConfig(BaseModel):
