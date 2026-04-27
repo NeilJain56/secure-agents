@@ -26,6 +26,7 @@ Configuration::
 from __future__ import annotations
 
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -39,6 +40,17 @@ from secure_agents.core.schemas import validate_schema
 from .prompts import REPS_ANALYSIS_SCHEMA, SYSTEM_PROMPT, build_review_instruction
 
 logger = structlog.get_logger()
+
+# Matches \u followed by fewer than 4 hex digits or non-hex chars — produced
+# occasionally by smaller models when quoting contract language that contains
+# backslashes.  Replace with a safe space to allow JSON parsing to succeed.
+_INVALID_UNICODE_ESCAPE = re.compile(r'\\u(?![0-9a-fA-F]{4})')
+
+
+def _sanitize_json(text: str) -> str:
+    """Remove invalid \\uXXXX sequences that break json.loads."""
+    return _INVALID_UNICODE_ESCAPE.sub(' ', text)
+
 
 _SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".doc", ".pptx", ".xlsx"}
 
@@ -249,9 +261,12 @@ class RepsReviewerAgent(BaseAgent):
 
             ok, parsed = validate_schema(response.content, REPS_ANALYSIS_SCHEMA)
             if not ok:
-                # Try normalising confidence percentages (some models emit 0-100)
+                # Repair common model output quirks before giving up:
+                # 1. Confidence values expressed as 0-100 instead of 0.0-1.0
+                # 2. Invalid \uXXXX unicode escapes (model hallucinates hex digits)
                 try:
-                    raw = json.loads(response.content)
+                    cleaned = _sanitize_json(response.content)
+                    raw = json.loads(cleaned)
                     for item in raw.get("results", []):
                         c = item.get("confidence")
                         if isinstance(c, (int, float)) and c > 1.0:
